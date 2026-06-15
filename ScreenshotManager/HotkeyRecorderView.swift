@@ -38,7 +38,7 @@ final class HotkeyRecorderControl: NSView {
     }
 
     override var intrinsicContentSize: NSSize {
-        NSSize(width: 220, height: 34)
+        NSSize(width: 150, height: 34)
     }
 
     override func mouseDown(with event: NSEvent) {
@@ -92,4 +92,3 @@ final class HotkeyRecorderControl: NSView {
         attributedText.draw(in: textRect)
     }
 }
-

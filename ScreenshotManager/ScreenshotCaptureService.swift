@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 
 enum ScreenshotCaptureService {
@@ -21,6 +22,14 @@ enum ScreenshotCaptureService {
             throw CancellationError()
         }
 
+        return destinationURL
+    }
+
+    static func save(_ image: NSImage, in folderURL: URL) throws -> URL {
+        try FileManager.default.createDirectory(at: folderURL, withIntermediateDirectories: true)
+
+        let destinationURL = uniqueScreenshotURL(in: folderURL)
+        try ImageEditingService.write(image, to: destinationURL)
         return destinationURL
     }
 
@@ -76,4 +85,3 @@ enum ScreenshotCaptureError: LocalizedError {
         }
     }
 }
-

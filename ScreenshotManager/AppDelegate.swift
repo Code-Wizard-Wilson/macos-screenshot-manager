@@ -68,7 +68,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func registerGlobalHotkey() {
         let didRegister = GlobalHotkeyManager.shared.register(hotkey: store.hotkey) { [weak self] in
-            self?.toggleWindow()
+            self?.store.captureToClipboard()
         }
 
         if !didRegister {

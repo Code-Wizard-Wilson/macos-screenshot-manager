@@ -93,19 +93,11 @@ final class ScreenshotStore: ObservableObject {
     }
 
     func captureToClipboard() {
-        runCapture {
-            try await ScreenshotCaptureService.captureToClipboard()
-            return .clipboard
-        }
+        runOverlayCapture(mode: .clipboard)
     }
 
     func captureAndSaveToLibrary() {
-        let folderURL = folderURL
-
-        runCapture {
-            let savedURL = try await ScreenshotCaptureService.captureAndSave(in: folderURL)
-            return .saved(savedURL)
-        }
+        runOverlayCapture(mode: .save)
     }
 
     func chooseFolder() {
@@ -218,7 +210,7 @@ final class ScreenshotStore: ObservableObject {
         )
     }
 
-    private func runCapture(operation: @escaping () async throws -> CaptureOutcome) {
+    private func runOverlayCapture(mode: CaptureMode) {
         guard !isCapturing else {
             return
         }
@@ -228,45 +220,65 @@ final class ScreenshotStore: ObservableObject {
         let hiddenWindows = hideVisibleAppWindowsForCapture()
 
         Task { @MainActor in
-            try? await Task.sleep(nanoseconds: 180_000_000)
+            try? await Task.sleep(nanoseconds: 120_000_000)
 
-            do {
-                let outcome = try await operation()
+            ScreenCaptureOverlayController.shared.start { [weak self] result in
+                guard let self else {
+                    return
+                }
+
                 restoreAppWindows(hiddenWindows)
                 isCapturing = false
 
-                switch outcome {
-                case .clipboard:
+                switch result {
+                case .success(let image):
+                    handleCapturedImage(image, mode: mode)
+                case .failure(let error) where error is CancellationError:
                     showNotice(
-                        title: "Copied to Clipboard",
-                        detail: "No file was saved",
-                        systemImage: "doc.on.clipboard",
-                        tone: .success
+                        title: "Capture Cancelled",
+                        detail: "No changes made",
+                        systemImage: "xmark.circle",
+                        tone: .neutral
                     )
-                case .saved(let url):
-                    refresh(selecting: url)
+                case .failure(let error):
+                    errorMessage = error.localizedDescription
                     showNotice(
-                        title: "Saved to Library",
-                        detail: url.lastPathComponent,
-                        systemImage: "tray.and.arrow.down",
-                        tone: .success
+                        title: "Capture Failed",
+                        detail: error.localizedDescription,
+                        systemImage: "exclamationmark.triangle",
+                        tone: .failure
                     )
                 }
-            } catch is CancellationError {
-                restoreAppWindows(hiddenWindows)
-                isCapturing = false
+            }
+        }
+    }
+
+    private func handleCapturedImage(_ image: NSImage, mode: CaptureMode) {
+        switch mode {
+        case .clipboard:
+            let pasteboard = NSPasteboard.general
+            pasteboard.clearContents()
+            pasteboard.writeObjects([image])
+            showNotice(
+                title: "Copied to Clipboard",
+                detail: "No file was saved",
+                systemImage: "doc.on.clipboard",
+                tone: .success
+            )
+        case .save:
+            do {
+                let url = try ScreenshotCaptureService.save(image, in: folderURL)
+                refresh(selecting: url)
                 showNotice(
-                    title: "Capture Cancelled",
-                    detail: "No changes made",
-                    systemImage: "xmark.circle",
-                    tone: .neutral
+                    title: "Saved to Library",
+                    detail: url.lastPathComponent,
+                    systemImage: "tray.and.arrow.down",
+                    tone: .success
                 )
             } catch {
-                restoreAppWindows(hiddenWindows)
-                isCapturing = false
                 errorMessage = error.localizedDescription
                 showNotice(
-                    title: "Capture Failed",
+                    title: "Save Failed",
                     detail: error.localizedDescription,
                     systemImage: "exclamationmark.triangle",
                     tone: .failure
@@ -362,9 +374,9 @@ final class ScreenshotStore: ObservableObject {
     }
 }
 
-private enum CaptureOutcome {
+private enum CaptureMode {
     case clipboard
-    case saved(URL)
+    case save
 }
 
 struct CaptureNotice: Identifiable, Equatable {

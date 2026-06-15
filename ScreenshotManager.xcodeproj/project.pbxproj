@@ -20,6 +20,7 @@
 		1A0000012DFF00000000000B /* HotkeyRecorderView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A0000012DFF00000000010B /* HotkeyRecorderView.swift */; };
 		1A0000012DFF00000000000C /* ImageEditorView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A0000012DFF00000000010C /* ImageEditorView.swift */; };
 		1A0000012DFF00000000000D /* AppTypography.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A0000012DFF00000000010D /* AppTypography.swift */; };
+		1A0000012DFF00000000000E /* ScreenCaptureOverlayController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A0000012DFF00000000010E /* ScreenCaptureOverlayController.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -37,6 +38,7 @@
 		1A0000012DFF00000000010B /* HotkeyRecorderView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HotkeyRecorderView.swift; sourceTree = "<group>"; };
 		1A0000012DFF00000000010C /* ImageEditorView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ImageEditorView.swift; sourceTree = "<group>"; };
 		1A0000012DFF00000000010D /* AppTypography.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppTypography.swift; sourceTree = "<group>"; };
+		1A0000012DFF00000000010E /* ScreenCaptureOverlayController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScreenCaptureOverlayController.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -67,6 +69,7 @@
 				1A0000012DFF00000000010A /* AppHotkey.swift */,
 				1A0000012DFF000000000103 /* GlobalHotkeyManager.swift */,
 				1A0000012DFF00000000010B /* HotkeyRecorderView.swift */,
+				1A0000012DFF00000000010E /* ScreenCaptureOverlayController.swift */,
 				1A0000012DFF000000000104 /* ScreenshotItem.swift */,
 				1A0000012DFF000000000109 /* ScreenshotCaptureService.swift */,
 				1A0000012DFF000000000105 /* ScreenshotStore.swift */,
@@ -168,6 +171,7 @@
 				1A0000012DFF00000000000B /* HotkeyRecorderView.swift in Sources */,
 				1A0000012DFF00000000000C /* ImageEditorView.swift in Sources */,
 				1A0000012DFF00000000000D /* AppTypography.swift in Sources */,
+				1A0000012DFF00000000000E /* ScreenCaptureOverlayController.swift in Sources */,
 				1A0000012DFF000000000007 /* VisualEffectView.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;

@@ -148,9 +148,12 @@ private struct CompactHeaderView: View {
                 VStack(alignment: .leading, spacing: 4) {
                     Label("Screenshot Manager", systemImage: "camera.viewfinder")
                         .font(AppTypography.productTitle)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.82)
                     Text(store.hotkey.displayString)
                         .font(AppTypography.helper)
                         .foregroundStyle(.secondary)
+                        .lineLimit(1)
                 }
 
                 Spacer()
@@ -208,10 +211,13 @@ private struct SidebarView: View {
                     VStack(alignment: .leading, spacing: 8) {
                         Label("Screenshot Manager", systemImage: "camera.viewfinder")
                             .font(AppTypography.productTitle)
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.78)
 
                         Text(store.hotkey.displayString)
                             .font(AppTypography.helper)
                             .foregroundStyle(.secondary)
+                            .lineLimit(1)
                     }
 
                     CaptureControlsView(store: store)
@@ -258,7 +264,7 @@ private struct CaptureControlsView: View {
             Button {
                 store.captureToClipboard()
             } label: {
-                Label(store.isCapturing ? "Capturing..." : "Capture & Copy", systemImage: "camera.viewfinder")
+                Label(store.isCapturing ? "Capturing..." : "Copy", systemImage: "camera.viewfinder")
                     .frame(maxWidth: .infinity)
             }
             .buttonStyle(.borderedProminent)
@@ -267,7 +273,7 @@ private struct CaptureControlsView: View {
             Button {
                 store.captureAndSaveToLibrary()
             } label: {
-                Label("Capture & Save", systemImage: "tray.and.arrow.down")
+                Label("Save", systemImage: "tray.and.arrow.down")
                     .frame(maxWidth: .infinity)
             }
             .buttonStyle(.bordered)
@@ -297,7 +303,7 @@ private struct HotkeySectionView: View {
                     set: { store.updateHotkey($0) }
                 )
             )
-            .frame(height: 34)
+            .frame(maxWidth: .infinity, minHeight: 34, maxHeight: 34)
         }
         .padding(12)
         .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 8))

@@ -12,9 +12,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.setActivationPolicy(.regular)
         configureStatusItem()
         showWindow()
+        registerGlobalHotkey()
 
-        GlobalHotkeyManager.shared.registerDefaultHotkey { [weak self] in
-            self?.toggleWindow()
+        store.hotkeyDidChange = { [weak self] _ in
+            self?.registerGlobalHotkey()
         }
     }
 
@@ -65,6 +66,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         statusItem = item
     }
 
+    private func registerGlobalHotkey() {
+        let didRegister = GlobalHotkeyManager.shared.register(hotkey: store.hotkey) { [weak self] in
+            self?.toggleWindow()
+        }
+
+        if !didRegister {
+            store.showHotkeyRegistrationFailed(store.hotkey)
+        }
+    }
+
     private func makeWindow() -> NSWindow {
         let contentView = ContentView(store: store)
         let hostingController = NSHostingController(rootView: contentView)
@@ -82,7 +93,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         window.hasShadow = true
         window.toolbarStyle = .unifiedCompact
         window.isReleasedWhenClosed = false
-        window.minSize = NSSize(width: 980, height: 620)
+        window.minSize = NSSize(width: 720, height: 520)
         window.contentViewController = hostingController
         window.center()
 

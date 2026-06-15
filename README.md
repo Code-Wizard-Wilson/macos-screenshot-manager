@@ -5,9 +5,11 @@ Native macOS screenshot manager built with SwiftUI and AppKit.
 ## MVP
 
 - Global hotkey: `Command + Option + 5`
+- Customizable global hotkey from Settings or the sidebar recorder
 - Interactive screenshots copied directly to the clipboard
 - Separate `Capture & Save` action for permanent files
 - Polished native screenshot library
+- Basic image editor with rotate, flip, copy, save copy, and replace
 - Folder picker for screenshot/image folders
 - Search by filename and date
 - Large preview pane

@@ -11,11 +11,14 @@ final class ScreenshotStore: ObservableObject {
     @Published private(set) var captureNotice: CaptureNotice?
     @Published var selectedItem: ScreenshotItem?
     @Published var searchText = ""
+    @Published private(set) var hotkey: AppHotkey
     @Published private(set) var folderURL: URL
 
     private let folderDefaultsKey = "ScreenshotManager.folderURL"
     private let imageExtensions: Set<String> = ["png", "jpg", "jpeg", "heic", "heif", "tiff", "webp"]
     private var noticeClearTask: Task<Void, Never>?
+
+    var hotkeyDidChange: ((AppHotkey) -> Void)?
 
     var filteredItems: [ScreenshotItem] {
         let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -32,11 +35,29 @@ final class ScreenshotStore: ObservableObject {
     }
 
     init() {
+        hotkey = AppHotkey.load()
+
         if let savedPath = UserDefaults.standard.string(forKey: folderDefaultsKey) {
             folderURL = URL(filePath: savedPath)
         } else {
             folderURL = Self.defaultScreenshotFolder()
         }
+    }
+
+    func updateHotkey(_ hotkey: AppHotkey) {
+        guard self.hotkey != hotkey else {
+            return
+        }
+
+        self.hotkey = hotkey
+        hotkey.save()
+        hotkeyDidChange?(hotkey)
+        showNotice(
+            title: "Hotkey Updated",
+            detail: hotkey.displayString,
+            systemImage: "keyboard",
+            tone: .success
+        )
     }
 
     func refresh(selecting selectedURL: URL? = nil) {
@@ -123,6 +144,60 @@ final class ScreenshotStore: ObservableObject {
         pasteboard.writeObjects([image])
     }
 
+    func copyEditedImage(_ image: NSImage) {
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.writeObjects([image])
+        showNotice(
+            title: "Edited Image Copied",
+            detail: "Clipboard updated",
+            systemImage: "doc.on.clipboard",
+            tone: .success
+        )
+    }
+
+    func saveEditedCopy(_ image: NSImage, source item: ScreenshotItem) {
+        do {
+            let savedURL = try ImageEditingService.saveCopy(image, sourceURL: item.url)
+            refresh(selecting: savedURL)
+            showNotice(
+                title: "Edited Copy Saved",
+                detail: savedURL.lastPathComponent,
+                systemImage: "plus.square.on.square",
+                tone: .success
+            )
+        } catch {
+            errorMessage = error.localizedDescription
+            showNotice(
+                title: "Save Failed",
+                detail: error.localizedDescription,
+                systemImage: "exclamationmark.triangle",
+                tone: .failure
+            )
+        }
+    }
+
+    func replaceImage(_ image: NSImage, item: ScreenshotItem) {
+        do {
+            try ImageEditingService.write(image, to: item.url)
+            refresh(selecting: item.url)
+            showNotice(
+                title: "Original Replaced",
+                detail: item.fileName,
+                systemImage: "square.and.arrow.down",
+                tone: .success
+            )
+        } catch {
+            errorMessage = error.localizedDescription
+            showNotice(
+                title: "Replace Failed",
+                detail: error.localizedDescription,
+                systemImage: "exclamationmark.triangle",
+                tone: .failure
+            )
+        }
+    }
+
     func delete(_ item: ScreenshotItem) {
         do {
             try FileManager.default.trashItem(at: item.url, resultingItemURL: nil)
@@ -130,6 +205,17 @@ final class ScreenshotStore: ObservableObject {
         } catch {
             errorMessage = error.localizedDescription
         }
+    }
+
+    func showHotkeyRegistrationFailed(_ hotkey: AppHotkey) {
+        let message = "Could not register \(hotkey.displayString). Try another shortcut."
+        errorMessage = message
+        showNotice(
+            title: "Hotkey Unavailable",
+            detail: message,
+            systemImage: "keyboard.badge.eye",
+            tone: .failure
+        )
     }
 
     private func runCapture(operation: @escaping () async throws -> CaptureOutcome) {

@@ -16,6 +16,10 @@
 		1A0000012DFF000000000007 /* VisualEffectView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A0000012DFF000000000107 /* VisualEffectView.swift */; };
 		1A0000012DFF000000000008 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 1A0000012DFF000000000108 /* Assets.xcassets */; };
 		1A0000012DFF000000000009 /* ScreenshotCaptureService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A0000012DFF000000000109 /* ScreenshotCaptureService.swift */; };
+		1A0000012DFF00000000000A /* AppHotkey.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A0000012DFF00000000010A /* AppHotkey.swift */; };
+		1A0000012DFF00000000000B /* HotkeyRecorderView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A0000012DFF00000000010B /* HotkeyRecorderView.swift */; };
+		1A0000012DFF00000000000C /* ImageEditorView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A0000012DFF00000000010C /* ImageEditorView.swift */; };
+		1A0000012DFF00000000000D /* AppTypography.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A0000012DFF00000000010D /* AppTypography.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -29,6 +33,10 @@
 		1A0000012DFF000000000107 /* VisualEffectView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VisualEffectView.swift; sourceTree = "<group>"; };
 		1A0000012DFF000000000108 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		1A0000012DFF000000000109 /* ScreenshotCaptureService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScreenshotCaptureService.swift; sourceTree = "<group>"; };
+		1A0000012DFF00000000010A /* AppHotkey.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppHotkey.swift; sourceTree = "<group>"; };
+		1A0000012DFF00000000010B /* HotkeyRecorderView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HotkeyRecorderView.swift; sourceTree = "<group>"; };
+		1A0000012DFF00000000010C /* ImageEditorView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ImageEditorView.swift; sourceTree = "<group>"; };
+		1A0000012DFF00000000010D /* AppTypography.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppTypography.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -55,11 +63,15 @@
 			children = (
 				1A0000012DFF000000000101 /* ScreenshotManagerApp.swift */,
 				1A0000012DFF000000000102 /* AppDelegate.swift */,
+				1A0000012DFF00000000010D /* AppTypography.swift */,
+				1A0000012DFF00000000010A /* AppHotkey.swift */,
 				1A0000012DFF000000000103 /* GlobalHotkeyManager.swift */,
+				1A0000012DFF00000000010B /* HotkeyRecorderView.swift */,
 				1A0000012DFF000000000104 /* ScreenshotItem.swift */,
 				1A0000012DFF000000000109 /* ScreenshotCaptureService.swift */,
 				1A0000012DFF000000000105 /* ScreenshotStore.swift */,
 				1A0000012DFF000000000106 /* ContentView.swift */,
+				1A0000012DFF00000000010C /* ImageEditorView.swift */,
 				1A0000012DFF000000000107 /* VisualEffectView.swift */,
 				1A0000012DFF000000000108 /* Assets.xcassets */,
 			);
@@ -152,6 +164,10 @@
 				1A0000012DFF000000000005 /* ScreenshotStore.swift in Sources */,
 				1A0000012DFF000000000009 /* ScreenshotCaptureService.swift in Sources */,
 				1A0000012DFF000000000006 /* ContentView.swift in Sources */,
+				1A0000012DFF00000000000A /* AppHotkey.swift in Sources */,
+				1A0000012DFF00000000000B /* HotkeyRecorderView.swift in Sources */,
+				1A0000012DFF00000000000C /* ImageEditorView.swift in Sources */,
+				1A0000012DFF00000000000D /* AppTypography.swift in Sources */,
 				1A0000012DFF000000000007 /* VisualEffectView.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;

@@ -12,16 +12,16 @@ final class GlobalHotkeyManager {
 
     private init() {}
 
-    func registerDefaultHotkey(action: @escaping @MainActor () -> Void) {
+    @discardableResult
+    func register(hotkey: AppHotkey, action: @escaping @MainActor () -> Void) -> Bool {
         unregister()
         Self.action = action
 
         let hotKeyID = EventHotKeyID(signature: "SSMN".fourCharCodeValue, id: 1)
-        let modifiers = UInt32(cmdKey | optionKey)
 
         let hotKeyStatus = RegisterEventHotKey(
-            UInt32(kVK_ANSI_5),
-            modifiers,
+            hotkey.keyCode,
+            hotkey.modifiers,
             hotKeyID,
             GetApplicationEventTarget(),
             0,
@@ -29,7 +29,7 @@ final class GlobalHotkeyManager {
         )
 
         guard hotKeyStatus == noErr else {
-            return
+            return false
         }
 
         var eventType = EventTypeSpec(
@@ -37,7 +37,7 @@ final class GlobalHotkeyManager {
             eventKind: UInt32(kEventHotKeyPressed)
         )
 
-        InstallEventHandler(
+        let handlerStatus = InstallEventHandler(
             GetApplicationEventTarget(),
             { _, eventRef, _ -> OSStatus in
                 guard let eventRef else {
@@ -68,6 +68,13 @@ final class GlobalHotkeyManager {
             nil,
             &eventHandler
         )
+
+        guard handlerStatus == noErr else {
+            unregister()
+            return false
+        }
+
+        return true
     }
 
     func unregister() {

@@ -5,6 +5,8 @@ Native macOS screenshot manager built with SwiftUI and AppKit.
 ## MVP
 
 - Global hotkey: `Command + Option + 5`
+- Interactive screenshots copied directly to the clipboard
+- Separate `Capture & Save` action for permanent files
 - Polished native screenshot library
 - Folder picker for screenshot/image folders
 - Search by filename and date
@@ -25,4 +27,3 @@ Open `ScreenshotManager.xcodeproj` in Xcode or run:
 ```bash
 xcodebuild -project ScreenshotManager.xcodeproj -scheme ScreenshotManager -configuration Debug build
 ```
-

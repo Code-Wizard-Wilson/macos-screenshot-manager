@@ -35,6 +35,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         store.refresh()
     }
 
+    @objc private func captureToClipboard() {
+        store.captureToClipboard()
+    }
+
+    @objc private func captureAndSave() {
+        store.captureAndSaveToLibrary()
+    }
+
     @objc private func quitApp() {
         NSApp.terminate(nil)
     }
@@ -45,6 +53,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         item.button?.imagePosition = .imageOnly
 
         let menu = NSMenu()
+        menu.addItem(NSMenuItem(title: "Capture to Clipboard", action: #selector(captureToClipboard), keyEquivalent: "c"))
+        menu.addItem(NSMenuItem(title: "Capture & Save", action: #selector(captureAndSave), keyEquivalent: "s"))
+        menu.addItem(.separator())
         menu.addItem(NSMenuItem(title: "Open Manager", action: #selector(openManager), keyEquivalent: "o"))
         menu.addItem(NSMenuItem(title: "Refresh Library", action: #selector(refreshLibrary), keyEquivalent: "r"))
         menu.addItem(.separator())
@@ -66,6 +77,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         )
         window.title = "Screenshot Manager"
         window.titlebarAppearsTransparent = true
+        window.backgroundColor = .clear
+        window.isOpaque = false
+        window.hasShadow = true
         window.toolbarStyle = .unifiedCompact
         window.isReleasedWhenClosed = false
         window.minSize = NSSize(width: 980, height: 620)
@@ -98,4 +112,3 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 }
-

@@ -18,6 +18,8 @@ struct SettingsView: View {
         Form {
             Section {
                 LabeledContent("Global hotkey", value: "Command + Option + 5")
+                LabeledContent("Default capture", value: "Clipboard only")
+                LabeledContent("Saved captures", value: "Capture & Save writes to the indexed folder")
                 LabeledContent("Indexed folder", value: store.folderURL.path(percentEncoded: false))
             }
         }
@@ -26,4 +28,3 @@ struct SettingsView: View {
         .frame(width: 520)
     }
 }
-

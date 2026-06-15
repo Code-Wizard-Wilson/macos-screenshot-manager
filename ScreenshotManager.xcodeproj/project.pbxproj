@@ -15,6 +15,7 @@
 		1A0000012DFF000000000006 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A0000012DFF000000000106 /* ContentView.swift */; };
 		1A0000012DFF000000000007 /* VisualEffectView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A0000012DFF000000000107 /* VisualEffectView.swift */; };
 		1A0000012DFF000000000008 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 1A0000012DFF000000000108 /* Assets.xcassets */; };
+		1A0000012DFF000000000009 /* ScreenshotCaptureService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A0000012DFF000000000109 /* ScreenshotCaptureService.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -27,6 +28,7 @@
 		1A0000012DFF000000000106 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
 		1A0000012DFF000000000107 /* VisualEffectView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VisualEffectView.swift; sourceTree = "<group>"; };
 		1A0000012DFF000000000108 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		1A0000012DFF000000000109 /* ScreenshotCaptureService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScreenshotCaptureService.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -55,6 +57,7 @@
 				1A0000012DFF000000000102 /* AppDelegate.swift */,
 				1A0000012DFF000000000103 /* GlobalHotkeyManager.swift */,
 				1A0000012DFF000000000104 /* ScreenshotItem.swift */,
+				1A0000012DFF000000000109 /* ScreenshotCaptureService.swift */,
 				1A0000012DFF000000000105 /* ScreenshotStore.swift */,
 				1A0000012DFF000000000106 /* ContentView.swift */,
 				1A0000012DFF000000000107 /* VisualEffectView.swift */,
@@ -147,6 +150,7 @@
 				1A0000012DFF000000000003 /* GlobalHotkeyManager.swift in Sources */,
 				1A0000012DFF000000000004 /* ScreenshotItem.swift in Sources */,
 				1A0000012DFF000000000005 /* ScreenshotStore.swift in Sources */,
+				1A0000012DFF000000000009 /* ScreenshotCaptureService.swift in Sources */,
 				1A0000012DFF000000000006 /* ContentView.swift in Sources */,
 				1A0000012DFF000000000007 /* VisualEffectView.swift in Sources */,
 			);
@@ -354,4 +358,3 @@
 	};
 	rootObject = 1A0000012DFF000000000070 /* Project object */;
 }
-

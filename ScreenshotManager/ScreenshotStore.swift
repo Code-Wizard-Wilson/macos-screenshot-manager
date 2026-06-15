@@ -6,13 +6,16 @@ import ImageIO
 final class ScreenshotStore: ObservableObject {
     @Published private(set) var items: [ScreenshotItem] = []
     @Published private(set) var isLoading = false
+    @Published private(set) var isCapturing = false
     @Published private(set) var errorMessage: String?
+    @Published private(set) var captureNotice: CaptureNotice?
     @Published var selectedItem: ScreenshotItem?
     @Published var searchText = ""
     @Published private(set) var folderURL: URL
 
     private let folderDefaultsKey = "ScreenshotManager.folderURL"
     private let imageExtensions: Set<String> = ["png", "jpg", "jpeg", "heic", "heif", "tiff", "webp"]
+    private var noticeClearTask: Task<Void, Never>?
 
     var filteredItems: [ScreenshotItem] {
         let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -36,7 +39,7 @@ final class ScreenshotStore: ObservableObject {
         }
     }
 
-    func refresh() {
+    func refresh(selecting selectedURL: URL? = nil) {
         isLoading = true
         errorMessage = nil
 
@@ -48,9 +51,13 @@ final class ScreenshotStore: ObservableObject {
                 let scannedItems = try Self.scanFolder(folderURL, imageExtensions: imageExtensions)
                 await MainActor.run {
                     self.items = scannedItems
-                    self.selectedItem = self.selectedItem.flatMap { selected in
-                        scannedItems.first(where: { $0.id == selected.id })
-                    } ?? scannedItems.first
+                    if let selectedURL {
+                        self.selectedItem = scannedItems.first { $0.url == selectedURL } ?? scannedItems.first
+                    } else {
+                        self.selectedItem = self.selectedItem.flatMap { selected in
+                            scannedItems.first(where: { $0.id == selected.id })
+                        } ?? scannedItems.first
+                    }
                     self.isLoading = false
                 }
             } catch {
@@ -61,6 +68,22 @@ final class ScreenshotStore: ObservableObject {
                     self.isLoading = false
                 }
             }
+        }
+    }
+
+    func captureToClipboard() {
+        runCapture {
+            try await ScreenshotCaptureService.captureToClipboard()
+            return .clipboard
+        }
+    }
+
+    func captureAndSaveToLibrary() {
+        let folderURL = folderURL
+
+        runCapture {
+            let savedURL = try await ScreenshotCaptureService.captureAndSave(in: folderURL)
+            return .saved(savedURL)
         }
     }
 
@@ -106,6 +129,95 @@ final class ScreenshotStore: ObservableObject {
             refresh()
         } catch {
             errorMessage = error.localizedDescription
+        }
+    }
+
+    private func runCapture(operation: @escaping () async throws -> CaptureOutcome) {
+        guard !isCapturing else {
+            return
+        }
+
+        isCapturing = true
+        errorMessage = nil
+        let hiddenWindows = hideVisibleAppWindowsForCapture()
+
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 180_000_000)
+
+            do {
+                let outcome = try await operation()
+                restoreAppWindows(hiddenWindows)
+                isCapturing = false
+
+                switch outcome {
+                case .clipboard:
+                    showNotice(
+                        title: "Copied to Clipboard",
+                        detail: "No file was saved",
+                        systemImage: "doc.on.clipboard",
+                        tone: .success
+                    )
+                case .saved(let url):
+                    refresh(selecting: url)
+                    showNotice(
+                        title: "Saved to Library",
+                        detail: url.lastPathComponent,
+                        systemImage: "tray.and.arrow.down",
+                        tone: .success
+                    )
+                }
+            } catch is CancellationError {
+                restoreAppWindows(hiddenWindows)
+                isCapturing = false
+                showNotice(
+                    title: "Capture Cancelled",
+                    detail: "No changes made",
+                    systemImage: "xmark.circle",
+                    tone: .neutral
+                )
+            } catch {
+                restoreAppWindows(hiddenWindows)
+                isCapturing = false
+                errorMessage = error.localizedDescription
+                showNotice(
+                    title: "Capture Failed",
+                    detail: error.localizedDescription,
+                    systemImage: "exclamationmark.triangle",
+                    tone: .failure
+                )
+            }
+        }
+    }
+
+    private func hideVisibleAppWindowsForCapture() -> [NSWindow] {
+        let windows = NSApp.windows.filter { window in
+            window.isVisible && window.level == .normal
+        }
+        windows.forEach { $0.orderOut(nil) }
+        return windows
+    }
+
+    private func restoreAppWindows(_ windows: [NSWindow]) {
+        guard !windows.isEmpty else {
+            return
+        }
+
+        windows.forEach { $0.makeKeyAndOrderFront(nil) }
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    private func showNotice(title: String, detail: String, systemImage: String, tone: CaptureNotice.Tone) {
+        noticeClearTask?.cancel()
+        captureNotice = CaptureNotice(title: title, detail: detail, systemImage: systemImage, tone: tone)
+
+        noticeClearTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 3_000_000_000)
+
+            guard !Task.isCancelled else {
+                return
+            }
+
+            captureNotice = nil
         }
     }
 
@@ -162,4 +274,23 @@ final class ScreenshotStore: ObservableObject {
         let height = properties[kCGImagePropertyPixelHeight] as? Int ?? 0
         return (width, height)
     }
+}
+
+private enum CaptureOutcome {
+    case clipboard
+    case saved(URL)
+}
+
+struct CaptureNotice: Identifiable, Equatable {
+    enum Tone: Equatable {
+        case success
+        case neutral
+        case failure
+    }
+
+    let id = UUID()
+    let title: String
+    let detail: String
+    let systemImage: String
+    let tone: Tone
 }

@@ -10,21 +10,32 @@ struct ContentView: View {
     ]
 
     var body: some View {
-        HStack(spacing: 0) {
-            SidebarView(store: store)
-                .frame(width: 246)
+        ZStack(alignment: .top) {
+            VisualEffectView(material: .underWindowBackground)
 
-            Divider()
+            HStack(spacing: 0) {
+                SidebarView(store: store)
+                    .frame(width: 246)
 
-            LibraryView(store: store, columns: columns, pendingDelete: $pendingDelete)
-                .frame(minWidth: 460)
+                Divider()
 
-            Divider()
+                LibraryView(store: store, columns: columns, pendingDelete: $pendingDelete)
+                    .frame(minWidth: 460)
 
-            PreviewPane(store: store, pendingDelete: $pendingDelete)
-                .frame(width: 340)
+                Divider()
+
+                PreviewPane(store: store, pendingDelete: $pendingDelete)
+                    .frame(width: 340)
+            }
+
+            if let notice = store.captureNotice {
+                CaptureNoticeView(notice: notice)
+                    .padding(.top, 12)
+                    .transition(.move(edge: .top).combined(with: .opacity))
+                    .zIndex(2)
+            }
         }
-        .background(Color(nsColor: .windowBackgroundColor))
+        .animation(.easeInOut(duration: 0.18), value: store.captureNotice)
         .alert(item: $pendingDelete) { item in
             Alert(
                 title: Text("Delete screenshot?"),
@@ -56,10 +67,9 @@ private struct SidebarView: View {
                     Text("Command + Option + 5")
                         .font(.caption)
                         .foregroundStyle(.secondary)
-                        .padding(.horizontal, 9)
-                        .padding(.vertical, 4)
-                        .background(.quaternary, in: Capsule())
                 }
+
+                CaptureControlsView(store: store)
 
                 VStack(spacing: 10) {
                     StatTile(title: "Indexed", value: "\(store.items.count)", icon: "square.grid.2x2")
@@ -70,7 +80,6 @@ private struct SidebarView: View {
                     Text("Folder")
                         .font(.caption)
                         .foregroundStyle(.secondary)
-                        .textCase(.uppercase)
 
                     Text(store.folderURL.path(percentEncoded: false))
                         .font(.callout)
@@ -111,6 +120,52 @@ private struct SidebarView: View {
     }
 }
 
+private struct CaptureControlsView: View {
+    @ObservedObject var store: ScreenshotStore
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Text("Capture")
+                    .font(.headline)
+
+                Spacer()
+
+                if store.isCapturing {
+                    ProgressView()
+                        .controlSize(.small)
+                        .transition(.opacity)
+                }
+            }
+
+            Button {
+                store.captureToClipboard()
+            } label: {
+                Label(store.isCapturing ? "Capturing..." : "Capture & Copy", systemImage: "camera.viewfinder")
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.borderedProminent)
+            .disabled(store.isCapturing)
+
+            Button {
+                store.captureAndSaveToLibrary()
+            } label: {
+                Label("Capture & Save", systemImage: "tray.and.arrow.down")
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.bordered)
+            .disabled(store.isCapturing)
+        }
+        .padding(12)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
+        .overlay {
+            RoundedRectangle(cornerRadius: 8)
+                .stroke(.separator.opacity(0.35), lineWidth: 1)
+        }
+        .animation(.easeInOut(duration: 0.16), value: store.isCapturing)
+    }
+}
+
 private struct StatTile: View {
     let title: String
     let value: String
@@ -136,6 +191,8 @@ private struct StatTile: View {
         }
         .padding(12)
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
+        .contentTransition(.numericText())
+        .animation(.easeInOut(duration: 0.16), value: value)
     }
 }
 
@@ -182,9 +239,11 @@ private struct LibraryView: View {
                                 Divider()
                                 Button("Delete", role: .destructive) { pendingDelete = item }
                             }
+                            .transition(.opacity)
                         }
                     }
                     .padding(18)
+                    .animation(.easeInOut(duration: 0.18), value: store.filteredItems)
                 }
             }
         }
@@ -232,8 +291,14 @@ private struct ScreenshotCard: View {
             .foregroundStyle(.secondary)
         }
         .padding(10)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
+        .background(isSelected ? Color.accentColor.opacity(0.12) : Color.clear, in: RoundedRectangle(cornerRadius: 8))
+        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 8))
+        .overlay {
+            RoundedRectangle(cornerRadius: 8)
+                .stroke(.separator.opacity(isSelected ? 0.5 : 0.25), lineWidth: 1)
+        }
         .contentShape(RoundedRectangle(cornerRadius: 8))
+        .animation(.easeInOut(duration: 0.16), value: isSelected)
     }
 }
 
@@ -307,6 +372,7 @@ private struct PreviewPane: View {
                     Spacer()
                 }
                 .padding(20)
+                .transition(.opacity)
             } else {
                 VStack(spacing: 12) {
                     Image(systemName: "photo.on.rectangle.angled")
@@ -317,8 +383,52 @@ private struct PreviewPane: View {
                         .font(.headline)
                         .foregroundStyle(.secondary)
                 }
+                .transition(.opacity)
             }
         }
+        .animation(.easeInOut(duration: 0.18), value: store.selectedItem?.id)
+    }
+}
+
+private struct CaptureNoticeView: View {
+    let notice: CaptureNotice
+
+    private var tint: Color {
+        switch notice.tone {
+        case .success:
+            return .accentColor
+        case .neutral:
+            return .secondary
+        case .failure:
+            return .red
+        }
+    }
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Image(systemName: notice.systemImage)
+                .font(.system(size: 16, weight: .semibold))
+                .foregroundStyle(tint)
+                .frame(width: 22)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(notice.title)
+                    .font(.callout.weight(.semibold))
+
+                Text(notice.detail)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
+        .overlay {
+            RoundedRectangle(cornerRadius: 8)
+                .stroke(.separator.opacity(0.35), lineWidth: 1)
+        }
+        .frame(maxWidth: 360)
     }
 }
 
@@ -361,4 +471,3 @@ private struct EmptyStateView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }
-

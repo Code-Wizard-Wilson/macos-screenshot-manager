@@ -23,6 +23,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         GlobalHotkeyManager.shared.unregister()
     }
 
+    func applicationDidBecomeActive(_ notification: Notification) {
+        store.refreshScreenRecordingAccess()
+    }
+
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
         showWindow()
         return true

@@ -30,10 +30,33 @@ struct SettingsView: View {
                 LabeledContent("Saved captures", value: "Capture & Save writes to the indexed folder")
                 LabeledContent("Indexed folder", value: store.folderURL.path(percentEncoded: false))
             }
+
+            Section("Permissions") {
+                LabeledContent("Screen Recording") {
+                    HStack(spacing: 10) {
+                        Label(
+                            store.screenRecordingAccessGranted ? "Allowed" : "Required",
+                            systemImage: store.screenRecordingAccessGranted ? "checkmark.shield" : "lock.rectangle"
+                        )
+                        .foregroundStyle(store.screenRecordingAccessGranted ? .green : .orange)
+
+                        Button("Request") {
+                            store.requestScreenRecordingAccess()
+                        }
+
+                        Button("Open Settings") {
+                            store.openScreenRecordingSettings()
+                        }
+                    }
+                }
+            }
         }
         .formStyle(.grouped)
         .font(AppTypography.itemTitle)
         .padding(24)
         .frame(width: 520)
+        .onAppear {
+            store.refreshScreenRecordingAccess()
+        }
     }
 }

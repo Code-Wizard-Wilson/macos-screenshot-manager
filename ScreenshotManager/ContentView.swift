@@ -174,7 +174,7 @@ private struct CompactHeaderView: View {
                         .frame(maxWidth: .infinity)
                 }
                 .buttonStyle(.borderedProminent)
-                .disabled(store.isCapturing)
+                .disabled(store.isCapturing || !store.screenRecordingAccessGranted)
 
                 Button {
                     store.captureAndSaveToLibrary()
@@ -183,7 +183,17 @@ private struct CompactHeaderView: View {
                         .frame(maxWidth: .infinity)
                 }
                 .buttonStyle(.bordered)
-                .disabled(store.isCapturing)
+                .disabled(store.isCapturing || !store.screenRecordingAccessGranted)
+            }
+
+            if !store.screenRecordingAccessGranted {
+                Button {
+                    store.requestScreenRecordingAccess()
+                } label: {
+                    Label("Allow Screen Recording", systemImage: "lock.open")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.bordered)
             }
 
             HotkeyRecorderView(
@@ -268,7 +278,7 @@ private struct CaptureControlsView: View {
                     .frame(maxWidth: .infinity)
             }
             .buttonStyle(.borderedProminent)
-            .disabled(store.isCapturing)
+            .disabled(store.isCapturing || !store.screenRecordingAccessGranted)
 
             Button {
                 store.captureAndSaveToLibrary()
@@ -277,7 +287,18 @@ private struct CaptureControlsView: View {
                     .frame(maxWidth: .infinity)
             }
             .buttonStyle(.bordered)
-            .disabled(store.isCapturing)
+            .disabled(store.isCapturing || !store.screenRecordingAccessGranted)
+
+            if !store.screenRecordingAccessGranted {
+                Button {
+                    store.requestScreenRecordingAccess()
+                } label: {
+                    Label("Allow Screen Recording", systemImage: "lock.open")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+            }
         }
         .padding(12)
         .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 8))

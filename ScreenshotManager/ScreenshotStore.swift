@@ -9,6 +9,7 @@ final class ScreenshotStore: ObservableObject {
     @Published private(set) var isCapturing = false
     @Published private(set) var errorMessage: String?
     @Published private(set) var captureNotice: CaptureNotice?
+    @Published private(set) var screenRecordingAccessGranted = false
     @Published var selectedItem: ScreenshotItem?
     @Published var searchText = ""
     @Published private(set) var hotkey: AppHotkey
@@ -42,6 +43,8 @@ final class ScreenshotStore: ObservableObject {
         } else {
             folderURL = Self.defaultScreenshotFolder()
         }
+
+        refreshScreenRecordingAccess()
     }
 
     func updateHotkey(_ hotkey: AppHotkey) {
@@ -98,6 +101,41 @@ final class ScreenshotStore: ObservableObject {
 
     func captureAndSaveToLibrary() {
         runOverlayCapture(mode: .save)
+    }
+
+    func refreshScreenRecordingAccess() {
+        screenRecordingAccessGranted = ScreenCaptureOverlayController.hasScreenCaptureAccess
+    }
+
+    func requestScreenRecordingAccess() {
+        if ScreenCaptureOverlayController.hasScreenCaptureAccess {
+            refreshScreenRecordingAccess()
+            showNotice(
+                title: "Screen Recording Allowed",
+                detail: "Capture is ready",
+                systemImage: "checkmark.shield",
+                tone: .success
+            )
+            return
+        }
+
+        ScreenCaptureOverlayController.requestScreenCaptureAccess()
+        refreshScreenRecordingAccess()
+        openScreenRecordingSettings()
+        showNotice(
+            title: "Restart Required",
+            detail: "After allowing access, quit and reopen the app",
+            systemImage: "lock.open",
+            tone: .neutral
+        )
+    }
+
+    func openScreenRecordingSettings() {
+        guard let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture") else {
+            return
+        }
+
+        NSWorkspace.shared.open(url)
     }
 
     func chooseFolder() {
@@ -212,6 +250,20 @@ final class ScreenshotStore: ObservableObject {
 
     private func runOverlayCapture(mode: CaptureMode) {
         guard !isCapturing else {
+            return
+        }
+
+        refreshScreenRecordingAccess()
+
+        guard screenRecordingAccessGranted else {
+            let message = ScreenCaptureOverlayError.screenRecordingPermissionRequired.localizedDescription
+            errorMessage = message
+            showNotice(
+                title: "Screen Recording Needed",
+                detail: "Allow access in Settings, then relaunch",
+                systemImage: "lock.rectangle",
+                tone: .failure
+            )
             return
         }
 

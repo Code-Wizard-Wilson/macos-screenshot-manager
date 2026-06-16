@@ -10,10 +10,19 @@ final class ScreenCaptureOverlayController {
 
     private init() {}
 
+    static var hasScreenCaptureAccess: Bool {
+        CGPreflightScreenCaptureAccess()
+    }
+
+    @discardableResult
+    static func requestScreenCaptureAccess() -> Bool {
+        CGRequestScreenCaptureAccess()
+    }
+
     func start(completion: @escaping (Result<NSImage, Error>) -> Void) {
         cancel()
 
-        guard CGPreflightScreenCaptureAccess() || CGRequestScreenCaptureAccess() else {
+        guard Self.hasScreenCaptureAccess else {
             completion(.failure(ScreenCaptureOverlayError.screenRecordingPermissionRequired))
             return
         }
@@ -260,8 +269,7 @@ enum ScreenCaptureOverlayError: LocalizedError {
         case .captureFailed:
             return "Could not capture the selected area."
         case .screenRecordingPermissionRequired:
-            return "Enable Screen Recording permission for Screenshot Manager."
+            return "Screen Recording access is not active. Allow Screenshot Manager in System Settings, then quit and reopen the app."
         }
     }
 }
-

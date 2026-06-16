@@ -1,6 +1,6 @@
 import AppKit
 import CoreGraphics
-import ScreenCaptureKit
+@preconcurrency import ScreenCaptureKit
 
 @MainActor
 final class ScreenCaptureOverlayController {
@@ -71,7 +71,11 @@ final class ScreenCaptureOverlayController {
             try? await Task.sleep(nanoseconds: 90_000_000)
 
             do {
-                let image = try await Self.captureImage(in: globalRect)
+                let image = try await Self.captureImage(
+                    localRect: localRect,
+                    screen: window.screen,
+                    fallbackGlobalRect: globalRect
+                )
                 finish(.success(image))
             } catch {
                 finish(.failure(error))
@@ -101,13 +105,13 @@ final class ScreenCaptureOverlayController {
         )
     }
 
-    private static func captureImage(in globalRect: NSRect) async throws -> NSImage {
-        let captureRect = coreGraphicsRect(from: globalRect)
-
-        if #available(macOS 15.2, *) {
-            let cgImage = try await screenCaptureKitImage(in: captureRect)
-            return NSImage(cgImage: cgImage, size: globalRect.size)
+    private static func captureImage(localRect: NSRect, screen: NSScreen?, fallbackGlobalRect: NSRect) async throws -> NSImage {
+        if #available(macOS 14.0, *), let screen {
+            return try await screenCaptureKitImage(localRect: localRect, screen: screen)
         }
+
+        let globalRect = fallbackGlobalRect
+        let captureRect = coreGraphicsRect(from: globalRect)
 
         guard let cgImage = CGWindowListCreateImage(
             captureRect,
@@ -121,18 +125,61 @@ final class ScreenCaptureOverlayController {
         return NSImage(cgImage: cgImage, size: globalRect.size)
     }
 
-    @available(macOS 15.2, *)
-    private static func screenCaptureKitImage(in rect: CGRect) async throws -> CGImage {
-        try await withCheckedThrowingContinuation { continuation in
-            SCScreenshotManager.captureImage(in: rect) { image, error in
-                if let image {
-                    continuation.resume(returning: image)
-                } else {
-                    continuation.resume(throwing: error ?? ScreenCaptureOverlayError.captureFailed)
-                }
-            }
+    @available(macOS 14.0, *)
+    private static func screenCaptureKitImage(localRect: NSRect, screen: NSScreen) async throws -> NSImage {
+        let content = try await SCShareableContent.current
+        let screenDisplayID = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber
+        let displayID = screenDisplayID.map { CGDirectDisplayID($0.uint32Value) }
+        let displayForScreen = displayID.flatMap { id in
+            content.displays.first { $0.displayID == id }
         }
+
+        guard let display = displayForScreen ?? content.displays.first(where: { $0.frame.intersects(screen.frame) }) else {
+            throw ScreenCaptureOverlayError.captureFailed
+        }
+
+        let filter = SCContentFilter(display: display, excludingWindows: [])
+        if #available(macOS 14.2, *) {
+            filter.includeMenuBar = true
+        }
+
+        let scale = screen.backingScaleFactor
+        let fullWidth = max(1, Int(round(screen.frame.width * scale)))
+        let fullHeight = max(1, Int(round(screen.frame.height * scale)))
+        let configuration = SCStreamConfiguration()
+        configuration.width = fullWidth
+        configuration.height = fullHeight
+        configuration.scalesToFit = false
+        configuration.showsCursor = false
+
+        let displayImage = try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: configuration)
+        let cropRect = pixelCropRect(localRect: localRect, scale: scale, imageSize: CGSize(width: displayImage.width, height: displayImage.height), screenSize: screen.frame.size)
+
+        guard let croppedImage = displayImage.cropping(to: cropRect) else {
+            throw ScreenCaptureOverlayError.captureFailed
+        }
+
+        return NSImage(cgImage: croppedImage, size: localRect.size)
     }
+
+    private static func pixelCropRect(localRect: NSRect, scale: CGFloat, imageSize: CGSize, screenSize: CGSize) -> CGRect {
+        let rect = CGRect(
+            x: localRect.minX * scale,
+            y: (screenSize.height - localRect.maxY) * scale,
+            width: localRect.width * scale,
+            height: localRect.height * scale
+        ).integral
+
+        let bounds = CGRect(origin: .zero, size: imageSize)
+        let clipped = rect.intersection(bounds)
+
+        if clipped.isNull || clipped.width < 1 || clipped.height < 1 {
+            return bounds
+        }
+
+        return clipped
+    }
+
 }
 
 final class ScreenCaptureOverlayWindow: NSWindow {

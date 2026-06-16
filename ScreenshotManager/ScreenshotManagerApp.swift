@@ -27,7 +27,7 @@ struct SettingsView: View {
                     .frame(width: 220, height: 34)
                 }
                 LabeledContent("Default capture", value: "Clipboard only")
-                LabeledContent("Saved captures", value: "Capture & Save writes to the indexed folder")
+                LabeledContent("Library mode", value: "Optional folder output")
                 LabeledContent("Indexed folder", value: store.folderURL.path(percentEncoded: false))
             }
 

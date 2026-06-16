@@ -1,6 +1,7 @@
 import AppKit
 import Foundation
 import ImageIO
+import SwiftUI
 
 @MainActor
 final class ScreenshotStore: ObservableObject {
@@ -18,6 +19,7 @@ final class ScreenshotStore: ObservableObject {
     private let folderDefaultsKey = "ScreenshotManager.folderURL"
     private let imageExtensions: Set<String> = ["png", "jpg", "jpeg", "heic", "heif", "tiff", "webp"]
     private var noticeClearTask: Task<Void, Never>?
+    private var captureEditorWindowController: NSWindowController?
 
     var hotkeyDidChange: ((AppHotkey) -> Void)?
 
@@ -159,24 +161,12 @@ final class ScreenshotStore: ObservableObject {
         let pasteboard = NSPasteboard.general
         pasteboard.clearContents()
         pasteboard.writeObjects([image])
-        showNotice(
-            title: "Edited Image Copied",
-            detail: "Clipboard updated",
-            systemImage: "doc.on.clipboard",
-            tone: .success
-        )
     }
 
     func saveEditedCopy(_ image: NSImage, source item: ScreenshotItem) {
         do {
             let savedURL = try ImageEditingService.saveCopy(image, sourceURL: item.url)
             refresh(selecting: savedURL)
-            showNotice(
-                title: "Edited Copy Saved",
-                detail: savedURL.lastPathComponent,
-                systemImage: "plus.square.on.square",
-                tone: .success
-            )
         } catch {
             errorMessage = error.localizedDescription
             showNotice(
@@ -192,12 +182,6 @@ final class ScreenshotStore: ObservableObject {
         do {
             try ImageEditingService.write(image, to: item.url)
             refresh(selecting: item.url)
-            showNotice(
-                title: "Original Replaced",
-                detail: item.fileName,
-                systemImage: "square.and.arrow.down",
-                tone: .success
-            )
         } catch {
             errorMessage = error.localizedDescription
             showNotice(
@@ -227,6 +211,35 @@ final class ScreenshotStore: ObservableObject {
             systemImage: "keyboard.badge.eye",
             tone: .failure
         )
+    }
+
+    func finishAnnotatedCapture(_ image: NSImage, mode: CaptureMode) {
+        switch mode {
+        case .clipboard:
+            let pasteboard = NSPasteboard.general
+            pasteboard.clearContents()
+            pasteboard.writeObjects([image])
+            closeCaptureEditor()
+        case .save:
+            do {
+                let url = try ScreenshotCaptureService.save(image, in: folderURL)
+                refresh(selecting: url)
+                closeCaptureEditor()
+            } catch {
+                errorMessage = error.localizedDescription
+                showNotice(
+                    title: "Save Failed",
+                    detail: error.localizedDescription,
+                    systemImage: "exclamationmark.triangle",
+                    tone: .failure
+                )
+            }
+        }
+    }
+
+    func closeCaptureEditor() {
+        captureEditorWindowController?.close()
+        captureEditorWindowController = nil
     }
 
     private func runOverlayCapture(mode: CaptureMode) {
@@ -275,37 +288,34 @@ final class ScreenshotStore: ObservableObject {
     }
 
     private func handleCapturedImage(_ image: NSImage, mode: CaptureMode) {
-        switch mode {
-        case .clipboard:
-            let pasteboard = NSPasteboard.general
-            pasteboard.clearContents()
-            pasteboard.writeObjects([image])
-            showNotice(
-                title: "Copied to Clipboard",
-                detail: "No file was saved",
-                systemImage: "doc.on.clipboard",
-                tone: .success
-            )
-        case .save:
-            do {
-                let url = try ScreenshotCaptureService.save(image, in: folderURL)
-                refresh(selecting: url)
-                showNotice(
-                    title: "Saved to Library",
-                    detail: url.lastPathComponent,
-                    systemImage: "tray.and.arrow.down",
-                    tone: .success
-                )
-            } catch {
-                errorMessage = error.localizedDescription
-                showNotice(
-                    title: "Save Failed",
-                    detail: error.localizedDescription,
-                    systemImage: "exclamationmark.triangle",
-                    tone: .failure
-                )
-            }
-        }
+        showCaptureEditor(image: image, mode: mode)
+    }
+
+    private func showCaptureEditor(image: NSImage, mode: CaptureMode) {
+        closeCaptureEditor()
+
+        let session = CaptureAnnotationSession(image: image, mode: mode)
+        let contentView = CaptureAnnotationView(store: self, session: session)
+        let hostingController = NSHostingController(rootView: contentView)
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 980, height: 680),
+            styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
+            backing: .buffered,
+            defer: false
+        )
+        window.title = "Annotate"
+        window.titlebarAppearsTransparent = true
+        window.backgroundColor = .windowBackgroundColor
+        window.isOpaque = true
+        window.minSize = NSSize(width: 760, height: 520)
+        window.contentViewController = hostingController
+        window.center()
+        window.isReleasedWhenClosed = false
+
+        let controller = NSWindowController(window: window)
+        captureEditorWindowController = controller
+        controller.showWindow(nil)
+        NSApp.activate(ignoringOtherApps: true)
     }
 
     private func hideVisibleAppWindowsForCapture() -> [NSWindow] {
@@ -407,9 +417,15 @@ final class ScreenshotStore: ObservableObject {
     }
 }
 
-private enum CaptureMode {
+enum CaptureMode {
     case clipboard
     case save
+}
+
+struct CaptureAnnotationSession: Identifiable {
+    let id = UUID()
+    let image: NSImage
+    let mode: CaptureMode
 }
 
 struct CaptureNotice: Identifiable, Equatable {

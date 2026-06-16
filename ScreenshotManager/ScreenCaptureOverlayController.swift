@@ -19,6 +19,7 @@ final class ScreenCaptureOverlayController {
         cancel()
 
         self.completion = completion
+        let windowTargets = Self.captureWindowTargets()
         windows = NSScreen.screens.map { screen in
             let window = ScreenCaptureOverlayWindow(
                 contentRect: screen.frame,
@@ -29,6 +30,7 @@ final class ScreenCaptureOverlayController {
             )
 
             let overlayView = ScreenCaptureOverlayView(frame: NSRect(origin: .zero, size: screen.frame.size))
+            overlayView.windowTargets = windowTargets
             overlayView.onComplete = { [weak self, weak window] localRect in
                 guard let window else {
                     self?.finish(.failure(ScreenCaptureOverlayError.captureFailed))
@@ -180,6 +182,63 @@ final class ScreenCaptureOverlayController {
         return clipped
     }
 
+    private static func captureWindowTargets() -> [CaptureWindowTarget] {
+        guard let windowInfo = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] else {
+            return []
+        }
+
+        let currentPID = ProcessInfo.processInfo.processIdentifier
+
+        return windowInfo.compactMap { info in
+            let ownerPID = (info[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value
+            guard ownerPID != currentPID else {
+                return nil
+            }
+
+            let layer = (info[kCGWindowLayer as String] as? NSNumber)?.intValue ?? 0
+            guard layer == 0 else {
+                return nil
+            }
+
+            let alpha = (info[kCGWindowAlpha as String] as? NSNumber)?.doubleValue ?? 1
+            guard alpha > 0.05 else {
+                return nil
+            }
+
+            guard let boundsValue = info[kCGWindowBounds as String],
+                  let cgBounds = CGRect(dictionaryRepresentation: boundsValue as! CFDictionary) else {
+                return nil
+            }
+
+            let frame = appKitRect(fromCoreGraphicsWindowBounds: cgBounds)
+            guard frame.width >= 80, frame.height >= 60 else {
+                return nil
+            }
+
+            let title = info[kCGWindowName as String] as? String
+            let appName = info[kCGWindowOwnerName as String] as? String
+            return CaptureWindowTarget(frame: frame, title: title?.isEmpty == false ? title : appName)
+        }
+    }
+
+    private static func appKitRect(fromCoreGraphicsWindowBounds rect: CGRect) -> NSRect {
+        let desktopFrame = NSScreen.screens.reduce(NSRect.null) { partialResult, screen in
+            partialResult.union(screen.frame)
+        }
+
+        return NSRect(
+            x: rect.minX,
+            y: desktopFrame.maxY - rect.maxY,
+            width: rect.width,
+            height: rect.height
+        )
+    }
+
+}
+
+fileprivate struct CaptureWindowTarget {
+    let frame: NSRect
+    let title: String?
 }
 
 final class ScreenCaptureOverlayWindow: NSWindow {
@@ -213,6 +272,7 @@ final class ScreenCaptureOverlayWindow: NSWindow {
         backgroundColor = .clear
         level = .screenSaver
         ignoresMouseEvents = false
+        acceptsMouseMovedEvents = true
         collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary, .ignoresCycle]
         hasShadow = false
     }
@@ -221,9 +281,13 @@ final class ScreenCaptureOverlayWindow: NSWindow {
 final class ScreenCaptureOverlayView: NSView {
     var onComplete: ((NSRect) -> Void)?
     var onCancel: (() -> Void)?
+    fileprivate var windowTargets: [CaptureWindowTarget] = []
 
     private var dragStart: NSPoint?
     private var selectionRect: NSRect = .zero
+    private var hoveredWindowTarget: CaptureWindowTarget?
+    private var pressedWindowTarget: CaptureWindowTarget?
+    private var trackingArea: NSTrackingArea?
 
     override var acceptsFirstResponder: Bool {
         true
@@ -238,8 +302,36 @@ final class ScreenCaptureOverlayView: NSView {
         window?.makeFirstResponder(self)
     }
 
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+
+        if let trackingArea {
+            removeTrackingArea(trackingArea)
+        }
+
+        let trackingArea = NSTrackingArea(
+            rect: bounds,
+            options: [.activeAlways, .inVisibleRect, .mouseMoved, .mouseEnteredAndExited],
+            owner: self
+        )
+        addTrackingArea(trackingArea)
+        self.trackingArea = trackingArea
+    }
+
+    override func mouseMoved(with event: NSEvent) {
+        updateHoveredWindow(at: event.locationInWindow)
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        hoveredWindowTarget = nil
+        needsDisplay = true
+    }
+
     override func mouseDown(with event: NSEvent) {
-        dragStart = event.locationInWindow
+        let point = event.locationInWindow
+        updateHoveredWindow(at: point)
+        dragStart = point
+        pressedWindowTarget = hoveredWindowTarget
         selectionRect = .zero
         needsDisplay = true
     }
@@ -249,7 +341,14 @@ final class ScreenCaptureOverlayView: NSView {
             return
         }
 
-        selectionRect = normalizedRect(from: dragStart, to: event.locationInWindow)
+        let currentPoint = event.locationInWindow
+        let distance = hypot(currentPoint.x - dragStart.x, currentPoint.y - dragStart.y)
+
+        if distance > 4 {
+            pressedWindowTarget = nil
+            selectionRect = normalizedRect(from: dragStart, to: currentPoint)
+        }
+
         needsDisplay = true
     }
 
@@ -259,15 +358,23 @@ final class ScreenCaptureOverlayView: NSView {
             return
         }
 
-        selectionRect = normalizedRect(from: dragStart, to: event.locationInWindow)
+        let endPoint = event.locationInWindow
+        let distance = hypot(endPoint.x - dragStart.x, endPoint.y - dragStart.y)
+        selectionRect = normalizedRect(from: dragStart, to: endPoint)
         self.dragStart = nil
 
-        guard selectionRect.width >= 8, selectionRect.height >= 8 else {
-            onCancel?()
+        if distance >= 8, selectionRect.width >= 8, selectionRect.height >= 8 {
+            onComplete?(selectionRect)
             return
         }
 
-        onComplete?(selectionRect)
+        if let target = pressedWindowTarget ?? target(at: endPoint),
+           let rect = localCaptureRect(for: target) {
+            onComplete?(rect)
+            return
+        }
+
+        onCancel?()
     }
 
     override func keyDown(with event: NSEvent) {
@@ -285,20 +392,89 @@ final class ScreenCaptureOverlayView: NSView {
         bounds.fill()
 
         if selectionRect != .zero {
-            NSColor.white.withAlphaComponent(0.08).setFill()
-            selectionRect.fill()
-
-            let path = NSBezierPath(rect: selectionRect)
-            NSColor.white.withAlphaComponent(0.95).setStroke()
-            path.lineWidth = 1.5
-            path.stroke()
+            drawSelection(selectionRect, title: nil)
+        } else if let hoveredWindowTarget,
+                  let rect = localCaptureRect(for: hoveredWindowTarget) {
+            drawSelection(rect, title: hoveredWindowTarget.title)
         }
 
         drawHint()
     }
 
+    private func updateHoveredWindow(at point: NSPoint) {
+        guard dragStart == nil else {
+            return
+        }
+
+        hoveredWindowTarget = target(at: point)
+        needsDisplay = true
+    }
+
+    private func target(at localPoint: NSPoint) -> CaptureWindowTarget? {
+        guard let window else {
+            return nil
+        }
+
+        let globalPoint = NSPoint(
+            x: window.frame.minX + localPoint.x,
+            y: window.frame.minY + localPoint.y
+        )
+
+        return windowTargets.first { target in
+            target.frame.contains(globalPoint) && target.frame.intersects(window.frame)
+        }
+    }
+
+    private func localCaptureRect(for target: CaptureWindowTarget) -> NSRect? {
+        guard let window else {
+            return nil
+        }
+
+        let localRect = NSRect(
+            x: target.frame.minX - window.frame.minX,
+            y: target.frame.minY - window.frame.minY,
+            width: target.frame.width,
+            height: target.frame.height
+        )
+        let clipped = localRect.intersection(bounds)
+
+        guard !clipped.isNull, clipped.width >= 8, clipped.height >= 8 else {
+            return nil
+        }
+
+        return clipped
+    }
+
+    private func drawSelection(_ rect: NSRect, title: String?) {
+        NSColor.white.withAlphaComponent(0.08).setFill()
+        rect.fill()
+
+        let path = NSBezierPath(rect: rect)
+        NSColor.white.withAlphaComponent(0.95).setStroke()
+        path.lineWidth = 1.5
+        path.stroke()
+
+        guard let title, !title.isEmpty else {
+            return
+        }
+
+        let attributes: [NSAttributedString.Key: Any] = [
+            .font: NSFont.systemFont(ofSize: 12, weight: .semibold),
+            .foregroundColor: NSColor.white.withAlphaComponent(0.96)
+        ]
+        let attributedTitle = NSAttributedString(string: title, attributes: attributes)
+        let titleSize = attributedTitle.size()
+        let titleRect = NSRect(
+            x: rect.minX + 8,
+            y: min(rect.maxY - titleSize.height - 8, bounds.maxY - titleSize.height - 12),
+            width: min(titleSize.width, max(40, rect.width - 16)),
+            height: titleSize.height
+        )
+        attributedTitle.draw(in: titleRect)
+    }
+
     private func drawHint() {
-        let text = "Drag to capture. Esc to cancel."
+        let text = "Click a highlighted window or drag an area. Esc cancels."
         let attributes: [NSAttributedString.Key: Any] = [
             .font: NSFont.systemFont(ofSize: 14, weight: .medium),
             .foregroundColor: NSColor.white.withAlphaComponent(0.92)

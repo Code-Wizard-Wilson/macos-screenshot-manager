@@ -16,19 +16,56 @@ struct SettingsView: View {
 
     var body: some View {
         Form {
-            Section {
-                LabeledContent("Global hotkey") {
+            Section("General") {
+                Toggle(
+                    "Open at login",
+                    isOn: Binding(
+                        get: { store.launchAtLoginEnabled },
+                        set: { store.updateLaunchAtLogin($0) }
+                    )
+                )
+
+                LabeledContent("Library folder") {
+                    HStack(spacing: 8) {
+                        Text(store.folderURL.path(percentEncoded: false))
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+
+                        Button("Choose") {
+                            store.chooseFolder()
+                        }
+
+                        Button {
+                            store.revealLibraryFolder()
+                        } label: {
+                            Image(systemName: "folder")
+                        }
+                        .help("Reveal in Finder")
+                    }
+                }
+            }
+
+            Section("Hotkeys") {
+                LabeledContent("Capture to clipboard") {
                     HotkeyRecorderView(
                         hotkey: Binding(
-                            get: { store.hotkey },
-                            set: { store.updateHotkey($0) }
+                            get: { store.clipboardHotkey },
+                            set: { store.updateClipboardHotkey($0) }
                         )
                     )
                     .frame(width: 220, height: 34)
                 }
-                LabeledContent("Default capture", value: "Clipboard only")
-                LabeledContent("Library mode", value: "Optional folder output")
-                LabeledContent("Indexed folder", value: store.folderURL.path(percentEncoded: false))
+
+                LabeledContent("Capture to library") {
+                    HotkeyRecorderView(
+                        hotkey: Binding(
+                            get: { store.saveHotkey },
+                            set: { store.updateSaveHotkey($0) }
+                        )
+                    )
+                    .frame(width: 220, height: 34)
+                }
             }
 
             Section("Permissions") {
@@ -54,9 +91,10 @@ struct SettingsView: View {
         .formStyle(.grouped)
         .font(AppTypography.itemTitle)
         .padding(24)
-        .frame(width: 520)
+        .frame(width: 720, height: 620)
         .onAppear {
             store.refreshScreenRecordingAccess()
+            store.refreshLaunchAtLoginStatus()
         }
     }
 }

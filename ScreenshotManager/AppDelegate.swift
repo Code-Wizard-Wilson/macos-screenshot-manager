@@ -7,15 +7,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private var windowController: NSWindowController?
     private var statusItem: NSStatusItem?
+    private let clipboardHotkeyID: UInt32 = 1
+    private let saveHotkeyID: UInt32 = 2
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.regular)
         configureStatusItem()
         showWindow()
-        registerGlobalHotkey()
+        registerGlobalHotkeys()
 
-        store.hotkeyDidChange = { [weak self] _ in
-            self?.registerGlobalHotkey()
+        store.hotkeysDidChange = { [weak self] in
+            self?.registerGlobalHotkeys()
         }
     }
 
@@ -40,6 +42,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         store.refresh()
     }
 
+    @objc private func openSettings() {
+        NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
     @objc private func captureToClipboard() {
         store.captureToClipboard()
     }
@@ -59,9 +66,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         let menu = NSMenu()
         menu.addItem(NSMenuItem(title: "Capture to Clipboard", action: #selector(captureToClipboard), keyEquivalent: "c"))
-        menu.addItem(NSMenuItem(title: "Capture & Save", action: #selector(captureAndSave), keyEquivalent: "s"))
+        menu.addItem(NSMenuItem(title: "Capture to Library", action: #selector(captureAndSave), keyEquivalent: "s"))
         menu.addItem(.separator())
         menu.addItem(NSMenuItem(title: "Open Manager", action: #selector(openManager), keyEquivalent: "o"))
+        menu.addItem(NSMenuItem(title: "Settings", action: #selector(openSettings), keyEquivalent: ","))
         menu.addItem(NSMenuItem(title: "Refresh Library", action: #selector(refreshLibrary), keyEquivalent: "r"))
         menu.addItem(.separator())
         menu.addItem(NSMenuItem(title: "Quit", action: #selector(quitApp), keyEquivalent: "q"))
@@ -70,13 +78,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         statusItem = item
     }
 
-    private func registerGlobalHotkey() {
-        let didRegister = GlobalHotkeyManager.shared.register(hotkey: store.hotkey) { [weak self] in
+    private func registerGlobalHotkeys() {
+        let didRegisterClipboard = GlobalHotkeyManager.shared.register(id: clipboardHotkeyID, hotkey: store.clipboardHotkey) { [weak self] in
             self?.store.captureToClipboard()
         }
 
-        if !didRegister {
-            store.showHotkeyRegistrationFailed(store.hotkey)
+        let didRegisterSave = GlobalHotkeyManager.shared.register(id: saveHotkeyID, hotkey: store.saveHotkey) { [weak self] in
+            self?.store.captureAndSaveToLibrary()
+        }
+
+        if !didRegisterClipboard {
+            store.showHotkeyRegistrationFailed(store.clipboardHotkey, name: "copy")
+        }
+
+        if !didRegisterSave {
+            store.showHotkeyRegistrationFailed(store.saveHotkey, name: "library")
         }
     }
 

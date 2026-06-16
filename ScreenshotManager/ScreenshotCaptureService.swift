@@ -25,10 +25,10 @@ enum ScreenshotCaptureService {
         return destinationURL
     }
 
-    static func save(_ image: NSImage, in folderURL: URL) throws -> URL {
+    static func save(_ image: NSImage, in folderURL: URL, kind: CaptureKind = .saved) throws -> URL {
         try FileManager.default.createDirectory(at: folderURL, withIntermediateDirectories: true)
 
-        let destinationURL = uniqueScreenshotURL(in: folderURL)
+        let destinationURL = uniqueScreenshotURL(in: folderURL, kind: kind)
         try ImageEditingService.write(image, to: destinationURL)
         return destinationURL
     }
@@ -58,11 +58,11 @@ enum ScreenshotCaptureService {
         }
     }
 
-    private static func uniqueScreenshotURL(in folderURL: URL) -> URL {
+    private static func uniqueScreenshotURL(in folderURL: URL, kind: CaptureKind = .saved) -> URL {
         let formatter = DateFormatter()
         formatter.dateFormat = "yyyy-MM-dd 'at' HH.mm.ss"
 
-        let baseName = "Screenshot Manager \(formatter.string(from: Date()))"
+        let baseName = "\(kind.filePrefix) Screenshot \(formatter.string(from: Date()))"
         var candidate = folderURL.appending(path: "\(baseName).png")
         var suffix = 2
 

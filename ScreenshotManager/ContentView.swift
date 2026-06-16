@@ -1,4 +1,5 @@
 import AppKit
+import ImageIO
 import SwiftUI
 
 struct ContentView: View {
@@ -151,27 +152,41 @@ private struct CompactHeaderView: View {
                         .font(AppTypography.productTitle)
                         .lineLimit(1)
                         .minimumScaleFactor(0.82)
-                    Text(store.hotkey.displayString)
-                        .font(AppTypography.helper)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Label(store.clipboardHotkey.displayString, systemImage: "doc.on.clipboard")
+                        Label(store.saveHotkey.displayString, systemImage: "tray.and.arrow.down")
+                    }
+                    .font(AppTypography.helper)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
                 }
 
                 Spacer()
 
-                Button {
-                    store.refresh()
-                } label: {
-                    Image(systemName: "arrow.clockwise")
+                HStack(spacing: 8) {
+                    Button {
+                        NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
+                    } label: {
+                        Image(systemName: "gearshape")
+                    }
+                    .buttonStyle(.bordered)
+                    .help("Settings")
+
+                    Button {
+                        store.refresh()
+                    } label: {
+                        Image(systemName: "arrow.clockwise")
+                    }
+                    .buttonStyle(.bordered)
+                    .help("Refresh")
                 }
-                .buttonStyle(.bordered)
             }
 
             HStack(spacing: 10) {
                 Button {
                     store.captureToClipboard()
                 } label: {
-                    Label(store.isCapturing ? "Capturing..." : "Capture & Copy", systemImage: "camera.viewfinder")
+                    Label(store.isCapturing ? "Capturing..." : "Clipboard", systemImage: "doc.on.clipboard")
                         .frame(maxWidth: .infinity)
                 }
                 .buttonStyle(.borderedProminent)
@@ -180,20 +195,14 @@ private struct CompactHeaderView: View {
                 Button {
                     store.captureAndSaveToLibrary()
                 } label: {
-                    Label("Save", systemImage: "tray.and.arrow.down")
+                    Label("Library", systemImage: "tray.and.arrow.down")
                         .frame(maxWidth: .infinity)
                 }
                 .buttonStyle(.bordered)
                 .disabled(store.isCapturing)
             }
 
-            HotkeyRecorderView(
-                hotkey: Binding(
-                    get: { store.hotkey },
-                    set: { store.updateHotkey($0) }
-                )
-            )
-            .frame(height: 34)
+            HotkeySummaryView(store: store)
         }
         .padding(14)
         .background(AppTheme.sidebarBackground)
@@ -212,14 +221,10 @@ private struct SidebarView: View {
                         .lineLimit(1)
                         .minimumScaleFactor(0.78)
 
-                    Text(store.hotkey.displayString)
-                        .font(AppTypography.helper)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
+                    HotkeySummaryView(store: store)
                 }
 
                 CaptureControlsView(store: store)
-                HotkeySectionView(store: store)
 
                 VStack(spacing: 10) {
                     StatTile(title: "Indexed", value: "\(store.items.count)", icon: "square.grid.2x2")
@@ -262,7 +267,7 @@ private struct CaptureControlsView: View {
             Button {
                 store.captureToClipboard()
             } label: {
-                Label(store.isCapturing ? "Capturing..." : "Copy", systemImage: "camera.viewfinder")
+                Label(store.isCapturing ? "Capturing..." : "Clipboard", systemImage: "doc.on.clipboard")
                     .frame(maxWidth: .infinity)
             }
             .buttonStyle(.borderedProminent)
@@ -271,7 +276,7 @@ private struct CaptureControlsView: View {
             Button {
                 store.captureAndSaveToLibrary()
             } label: {
-                Label("Save", systemImage: "tray.and.arrow.down")
+                Label("Library", systemImage: "tray.and.arrow.down")
                     .frame(maxWidth: .infinity)
             }
             .buttonStyle(.bordered)
@@ -287,22 +292,34 @@ private struct CaptureControlsView: View {
     }
 }
 
-private struct HotkeySectionView: View {
+private struct HotkeySummaryView: View {
     @ObservedObject var store: ScreenshotStore
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("Hotkey")
-                .font(AppTypography.sectionTitle)
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Text("Hotkeys")
+                    .font(AppTypography.sectionTitle)
 
-            HotkeyRecorderView(
-                hotkey: Binding(
-                    get: { store.hotkey },
-                    set: { store.updateHotkey($0) }
-                )
-            )
-            .frame(maxWidth: .infinity, minHeight: 34, maxHeight: 34)
+                Spacer()
+
+                Button {
+                    NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
+                } label: {
+                    Image(systemName: "gearshape")
+                }
+                .buttonStyle(.borderless)
+                .help("Settings")
+            }
+
+            Label(store.clipboardHotkey.displayString, systemImage: "doc.on.clipboard")
+                .lineLimit(1)
+
+            Label(store.saveHotkey.displayString, systemImage: "tray.and.arrow.down")
+                .lineLimit(1)
         }
+        .font(AppTypography.helper)
+        .foregroundStyle(.secondary)
         .padding(12)
         .background(AppTheme.panelBackground, in: RoundedRectangle(cornerRadius: 8))
         .overlay {
@@ -312,12 +329,24 @@ private struct HotkeySectionView: View {
     }
 }
 
+private struct SettingsShortcutButton: View {
+    var body: some View {
+        Button {
+            NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
+        } label: {
+            Label("Settings", systemImage: "gearshape")
+                .frame(maxWidth: .infinity)
+        }
+        .buttonStyle(.bordered)
+    }
+}
+
 private struct FolderSectionView: View {
     @ObservedObject var store: ScreenshotStore
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("Folder")
+            Text("Library")
                 .font(AppTypography.sectionTitle)
 
             Text(store.folderURL.path(percentEncoded: false))
@@ -331,6 +360,15 @@ private struct FolderSectionView: View {
                     RoundedRectangle(cornerRadius: 8)
                         .stroke(AppTheme.softBorder, lineWidth: 1)
                 }
+
+            Button {
+                store.captureAndSaveToLibrary()
+            } label: {
+                Label("Capture to Library", systemImage: "tray.and.arrow.down")
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.bordered)
+            .disabled(store.isCapturing)
 
             Button {
                 store.chooseFolder()
@@ -347,6 +385,8 @@ private struct FolderSectionView: View {
                     .frame(maxWidth: .infinity)
             }
             .buttonStyle(.bordered)
+
+            SettingsShortcutButton()
         }
     }
 }
@@ -443,6 +483,8 @@ private struct LibraryView: View {
 private struct ScreenshotCard: View {
     let item: ScreenshotItem
     let isSelected: Bool
+    @State private var thumbnail: NSImage?
+    @State private var isHovering = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -451,8 +493,8 @@ private struct ScreenshotCard: View {
                     RoundedRectangle(cornerRadius: 8)
                         .fill(AppTheme.imageWellBackground)
 
-                    if let image = NSImage(contentsOf: item.url) {
-                        Image(nsImage: image)
+                    if let thumbnail {
+                        Image(nsImage: thumbnail)
                             .resizable()
                             .scaledToFill()
                             .frame(width: proxy.size.width, height: proxy.size.height)
@@ -462,6 +504,15 @@ private struct ScreenshotCard: View {
                             .font(.largeTitle)
                             .foregroundStyle(.secondary)
                     }
+
+                    VStack {
+                        HStack {
+                            CaptureKindBadge(kind: item.captureKind)
+                            Spacer()
+                        }
+                        Spacer()
+                    }
+                    .padding(8)
                 }
                 .clipShape(RoundedRectangle(cornerRadius: 8))
                 .overlay {
@@ -489,11 +540,42 @@ private struct ScreenshotCard: View {
         .background(isSelected ? AppTheme.selectedBackground : AppTheme.cardBackground, in: RoundedRectangle(cornerRadius: 8))
         .overlay {
             RoundedRectangle(cornerRadius: 8)
-                .stroke(isSelected ? Color.accentColor.opacity(0.72) : AppTheme.softBorder, lineWidth: 1)
+                .stroke(isSelected ? Color.accentColor.opacity(0.72) : (isHovering ? AppTheme.border : AppTheme.softBorder), lineWidth: 1)
         }
         .contentShape(RoundedRectangle(cornerRadius: 8))
         .clipped()
+        .onHover { isHovering = $0 }
+        .task(id: item.url) {
+            thumbnail = await ThumbnailLoader.thumbnail(for: item.url, maxPixelSize: 640)
+        }
         .animation(.easeInOut(duration: 0.16), value: isSelected)
+        .animation(.easeInOut(duration: 0.12), value: isHovering)
+    }
+}
+
+private struct CaptureKindBadge: View {
+    let kind: CaptureKind
+
+    var body: some View {
+        Image(systemName: kind.systemImage)
+            .font(.system(size: 11, weight: .semibold))
+            .foregroundStyle(.white)
+            .frame(width: 22, height: 22)
+            .background(badgeColor, in: RoundedRectangle(cornerRadius: 6))
+            .overlay {
+                RoundedRectangle(cornerRadius: 6)
+                    .stroke(Color.white.opacity(0.18), lineWidth: 1)
+            }
+            .help(kind.displayName)
+    }
+
+    private var badgeColor: Color {
+        switch kind {
+        case .clipboard:
+            return .accentColor
+        case .saved:
+            return .green
+        }
     }
 }
 
@@ -536,6 +618,7 @@ private struct PreviewPane: View {
                         }
 
                         VStack(alignment: .leading, spacing: 8) {
+                            MetadataRow(title: "Type", value: item.captureKind.displayName)
                             MetadataRow(title: "Name", value: item.fileName)
                             MetadataRow(title: "Created", value: item.createdAt.formatted(date: .abbreviated, time: .shortened))
                             MetadataRow(title: "Dimensions", value: item.dimensionsText)
@@ -674,5 +757,25 @@ private struct EmptyStateView: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+}
+
+private enum ThumbnailLoader {
+    static func thumbnail(for url: URL, maxPixelSize: Int) async -> NSImage? {
+        await Task.detached(priority: .utility) {
+            let options: [CFString: Any] = [
+                kCGImageSourceShouldCache: false,
+                kCGImageSourceCreateThumbnailFromImageAlways: true,
+                kCGImageSourceThumbnailMaxPixelSize: maxPixelSize,
+                kCGImageSourceCreateThumbnailWithTransform: true
+            ]
+
+            guard let source = CGImageSourceCreateWithURL(url as CFURL, nil),
+                  let image = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else {
+                return nil
+            }
+
+            return NSImage(cgImage: image, size: NSSize(width: image.width, height: image.height))
+        }.value
     }
 }

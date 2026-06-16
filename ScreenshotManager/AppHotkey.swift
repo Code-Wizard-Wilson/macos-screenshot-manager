@@ -6,10 +6,17 @@ struct AppHotkey: Codable, Equatable, Sendable {
     let keyCode: UInt32
     let modifiers: UInt32
 
-    static let defaultValue = AppHotkey(
+    static let defaultClipboardValue = AppHotkey(
         keyCode: UInt32(kVK_ANSI_5),
         modifiers: UInt32(cmdKey) | UInt32(optionKey)
     )
+
+    static let defaultSaveValue = AppHotkey(
+        keyCode: UInt32(kVK_ANSI_6),
+        modifiers: UInt32(cmdKey) | UInt32(optionKey)
+    )
+
+    static let defaultValue = defaultClipboardValue
 
     private static let keyCodeDefaultsKey = "ScreenshotManager.hotkey.keyCode"
     private static let modifiersDefaultsKey = "ScreenshotManager.hotkey.modifiers"
@@ -66,9 +73,33 @@ struct AppHotkey: Codable, Equatable, Sendable {
         return AppHotkey(keyCode: keyCode, modifiers: modifiers)
     }
 
+    static func load(named name: String, fallback: AppHotkey, from defaults: UserDefaults = .standard) -> AppHotkey {
+        let keyCodeDefaultsKey = "ScreenshotManager.hotkey.\(name).keyCode"
+        let modifiersDefaultsKey = "ScreenshotManager.hotkey.\(name).modifiers"
+
+        guard defaults.object(forKey: keyCodeDefaultsKey) != nil,
+              defaults.object(forKey: modifiersDefaultsKey) != nil else {
+            return fallback
+        }
+
+        let keyCode = UInt32(defaults.integer(forKey: keyCodeDefaultsKey))
+        let modifiers = UInt32(defaults.integer(forKey: modifiersDefaultsKey))
+
+        guard keyCode > 0, modifiers > 0 else {
+            return fallback
+        }
+
+        return AppHotkey(keyCode: keyCode, modifiers: modifiers)
+    }
+
     func save(to defaults: UserDefaults = .standard) {
         defaults.set(Int(keyCode), forKey: Self.keyCodeDefaultsKey)
         defaults.set(Int(modifiers), forKey: Self.modifiersDefaultsKey)
+    }
+
+    func save(named name: String, to defaults: UserDefaults = .standard) {
+        defaults.set(Int(keyCode), forKey: "ScreenshotManager.hotkey.\(name).keyCode")
+        defaults.set(Int(modifiers), forKey: "ScreenshotManager.hotkey.\(name).modifiers")
     }
 
     private static func carbonModifiers(from flags: NSEvent.ModifierFlags) -> UInt32 {
@@ -154,4 +185,3 @@ struct AppHotkey: Codable, Equatable, Sendable {
         UInt32(kVK_F12): "F12"
     ]
 }
-

@@ -5,19 +5,20 @@ import Foundation
 final class GlobalHotkeyManager {
     static let shared = GlobalHotkeyManager()
 
-    nonisolated(unsafe) private static var action: (@MainActor () -> Void)?
+    nonisolated(unsafe) private static var actions: [UInt32: @MainActor () -> Void] = [:]
 
-    private var hotKeyRef: EventHotKeyRef?
+    private var hotKeyRefs: [UInt32: EventHotKeyRef] = [:]
     private var eventHandler: EventHandlerRef?
 
     private init() {}
 
     @discardableResult
-    func register(hotkey: AppHotkey, action: @escaping @MainActor () -> Void) -> Bool {
-        unregister()
-        Self.action = action
+    func register(id: UInt32, hotkey: AppHotkey, action: @escaping @MainActor () -> Void) -> Bool {
+        unregister(id: id)
+        Self.actions[id] = action
 
-        let hotKeyID = EventHotKeyID(signature: "SSMN".fourCharCodeValue, id: 1)
+        let hotKeyID = EventHotKeyID(signature: "SSMN".fourCharCodeValue, id: id)
+        var hotKeyRef: EventHotKeyRef?
 
         let hotKeyStatus = RegisterEventHotKey(
             hotkey.keyCode,
@@ -29,7 +30,43 @@ final class GlobalHotkeyManager {
         )
 
         guard hotKeyStatus == noErr else {
+            Self.actions[id] = nil
             return false
+        }
+
+        hotKeyRefs[id] = hotKeyRef
+
+        guard installEventHandlerIfNeeded() else {
+            unregister(id: id)
+            return false
+        }
+
+        return true
+    }
+
+    func unregister(id: UInt32) {
+        if let hotKeyRef = hotKeyRefs[id] {
+            UnregisterEventHotKey(hotKeyRef)
+            hotKeyRefs[id] = nil
+        }
+
+        Self.actions[id] = nil
+    }
+
+    func unregisterAll() {
+        hotKeyRefs.values.forEach { UnregisterEventHotKey($0) }
+        hotKeyRefs.removeAll()
+        Self.actions.removeAll()
+
+        if let eventHandler {
+            RemoveEventHandler(eventHandler)
+            self.eventHandler = nil
+        }
+    }
+
+    private func installEventHandlerIfNeeded() -> Bool {
+        guard eventHandler == nil else {
+            return true
         }
 
         var eventType = EventTypeSpec(
@@ -55,9 +92,10 @@ final class GlobalHotkeyManager {
                     &receivedHotKeyID
                 )
 
-                if receivedHotKeyID.signature == "SSMN".fourCharCodeValue, receivedHotKeyID.id == 1 {
+                if receivedHotKeyID.signature == "SSMN".fourCharCodeValue {
+                    let actionID = receivedHotKeyID.id
                     Task { @MainActor in
-                        GlobalHotkeyManager.action?()
+                        GlobalHotkeyManager.actions[actionID]?()
                     }
                 }
 
@@ -70,7 +108,6 @@ final class GlobalHotkeyManager {
         )
 
         guard handlerStatus == noErr else {
-            unregister()
             return false
         }
 
@@ -78,15 +115,7 @@ final class GlobalHotkeyManager {
     }
 
     func unregister() {
-        if let hotKeyRef {
-            UnregisterEventHotKey(hotKeyRef)
-            self.hotKeyRef = nil
-        }
-
-        if let eventHandler {
-            RemoveEventHandler(eventHandler)
-            self.eventHandler = nil
-        }
+        unregisterAll()
     }
 }
 

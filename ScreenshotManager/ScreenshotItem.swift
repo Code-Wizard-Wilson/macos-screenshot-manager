@@ -4,6 +4,7 @@ struct ScreenshotItem: Identifiable, Hashable, Sendable {
     let id: String
     let url: URL
     let fileName: String
+    let captureKind: CaptureKind
     let createdAt: Date
     let modifiedAt: Date
     let byteSize: Int64
@@ -23,3 +24,42 @@ struct ScreenshotItem: Identifiable, Hashable, Sendable {
     }
 }
 
+enum CaptureKind: String, Sendable {
+    case clipboard
+    case saved
+
+    var displayName: String {
+        switch self {
+        case .clipboard:
+            return "Copied"
+        case .saved:
+            return "Saved"
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .clipboard:
+            return "doc.on.clipboard"
+        case .saved:
+            return "tray.and.arrow.down"
+        }
+    }
+
+    var filePrefix: String {
+        switch self {
+        case .clipboard:
+            return "Copied"
+        case .saved:
+            return "Saved"
+        }
+    }
+
+    static func detect(from fileName: String) -> CaptureKind {
+        if fileName.hasPrefix("\(CaptureKind.clipboard.filePrefix) ") {
+            return .clipboard
+        }
+
+        return .saved
+    }
+}

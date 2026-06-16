@@ -1,6 +1,7 @@
 import AppKit
 import Foundation
 import ImageIO
+import ServiceManagement
 import SwiftUI
 
 @MainActor
@@ -11,9 +12,11 @@ final class ScreenshotStore: ObservableObject {
     @Published private(set) var errorMessage: String?
     @Published private(set) var captureNotice: CaptureNotice?
     @Published private(set) var screenRecordingAccessGranted = false
+    @Published private(set) var launchAtLoginEnabled = false
     @Published var selectedItem: ScreenshotItem?
     @Published var searchText = ""
-    @Published private(set) var hotkey: AppHotkey
+    @Published private(set) var clipboardHotkey: AppHotkey
+    @Published private(set) var saveHotkey: AppHotkey
     @Published private(set) var folderURL: URL
 
     private let folderDefaultsKey = "ScreenshotManager.folderURL"
@@ -21,7 +24,7 @@ final class ScreenshotStore: ObservableObject {
     private var noticeClearTask: Task<Void, Never>?
     private var captureEditorWindowController: NSWindowController?
 
-    var hotkeyDidChange: ((AppHotkey) -> Void)?
+    var hotkeysDidChange: (() -> Void)?
 
     var filteredItems: [ScreenshotItem] {
         let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -32,13 +35,16 @@ final class ScreenshotStore: ObservableObject {
 
         return items.filter { item in
             item.fileName.localizedCaseInsensitiveContains(query)
+                || item.captureKind.displayName.localizedCaseInsensitiveContains(query)
                 || item.createdAt.formatted(date: .abbreviated, time: .omitted).localizedCaseInsensitiveContains(query)
                 || item.modifiedAt.formatted(date: .abbreviated, time: .shortened).localizedCaseInsensitiveContains(query)
         }
     }
 
     init() {
-        hotkey = AppHotkey.load()
+        let legacyHotkey = AppHotkey.load()
+        clipboardHotkey = AppHotkey.load(named: "clipboard", fallback: legacyHotkey)
+        saveHotkey = AppHotkey.load(named: "save", fallback: .defaultSaveValue)
 
         let defaultFolderURL = Self.defaultScreenshotFolder()
 
@@ -51,18 +57,35 @@ final class ScreenshotStore: ObservableObject {
         }
 
         refreshScreenRecordingAccess()
+        refreshLaunchAtLoginStatus()
     }
 
-    func updateHotkey(_ hotkey: AppHotkey) {
-        guard self.hotkey != hotkey else {
+    func updateClipboardHotkey(_ hotkey: AppHotkey) {
+        guard clipboardHotkey != hotkey else {
             return
         }
 
-        self.hotkey = hotkey
-        hotkey.save()
-        hotkeyDidChange?(hotkey)
+        clipboardHotkey = hotkey
+        hotkey.save(named: "clipboard")
+        hotkeysDidChange?()
         showNotice(
-            title: "Hotkey Updated",
+            title: "Copy Hotkey Updated",
+            detail: hotkey.displayString,
+            systemImage: "keyboard",
+            tone: .success
+        )
+    }
+
+    func updateSaveHotkey(_ hotkey: AppHotkey) {
+        guard saveHotkey != hotkey else {
+            return
+        }
+
+        saveHotkey = hotkey
+        hotkey.save(named: "save")
+        hotkeysDidChange?()
+        showNotice(
+            title: "Library Hotkey Updated",
             detail: hotkey.displayString,
             systemImage: "keyboard",
             tone: .success
@@ -113,6 +136,33 @@ final class ScreenshotStore: ObservableObject {
         screenRecordingAccessGranted = ScreenCaptureOverlayController.hasScreenCaptureAccess
     }
 
+    func refreshLaunchAtLoginStatus() {
+        launchAtLoginEnabled = SMAppService.mainApp.status == .enabled
+    }
+
+    func updateLaunchAtLogin(_ enabled: Bool) {
+        do {
+            if enabled {
+                if SMAppService.mainApp.status != .enabled {
+                    try SMAppService.mainApp.register()
+                }
+            } else if SMAppService.mainApp.status == .enabled {
+                try SMAppService.mainApp.unregister()
+            }
+
+            refreshLaunchAtLoginStatus()
+        } catch {
+            refreshLaunchAtLoginStatus()
+            errorMessage = error.localizedDescription
+            showNotice(
+                title: "Startup Setting Failed",
+                detail: error.localizedDescription,
+                systemImage: "exclamationmark.triangle",
+                tone: .failure
+            )
+        }
+    }
+
     func openScreenRecordingSettings() {
         guard let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture") else {
             return
@@ -137,6 +187,10 @@ final class ScreenshotStore: ObservableObject {
         folderURL = url
         UserDefaults.standard.set(url.path(percentEncoded: false), forKey: folderDefaultsKey)
         refresh()
+    }
+
+    func revealLibraryFolder() {
+        NSWorkspace.shared.activateFileViewerSelecting([folderURL])
     }
 
     func open(_ item: ScreenshotItem) {
@@ -202,8 +256,8 @@ final class ScreenshotStore: ObservableObject {
         }
     }
 
-    func showHotkeyRegistrationFailed(_ hotkey: AppHotkey) {
-        let message = "Could not register \(hotkey.displayString). Try another shortcut."
+    func showHotkeyRegistrationFailed(_ hotkey: AppHotkey, name: String) {
+        let message = "Could not register \(name) hotkey \(hotkey.displayString). Try another shortcut."
         errorMessage = message
         showNotice(
             title: "Hotkey Unavailable",
@@ -216,13 +270,26 @@ final class ScreenshotStore: ObservableObject {
     func finishAnnotatedCapture(_ image: NSImage, mode: CaptureMode) {
         switch mode {
         case .clipboard:
+            do {
+                let url = try ScreenshotCaptureService.save(image, in: folderURL, kind: .clipboard)
+                refresh(selecting: url)
+            } catch {
+                errorMessage = error.localizedDescription
+                showNotice(
+                    title: "Library Write Failed",
+                    detail: error.localizedDescription,
+                    systemImage: "exclamationmark.triangle",
+                    tone: .failure
+                )
+            }
+
             let pasteboard = NSPasteboard.general
             pasteboard.clearContents()
             pasteboard.writeObjects([image])
             closeCaptureEditor()
         case .save:
             do {
-                let url = try ScreenshotCaptureService.save(image, in: folderURL)
+                let url = try ScreenshotCaptureService.save(image, in: folderURL, kind: .saved)
                 refresh(selecting: url)
                 closeCaptureEditor()
             } catch {
@@ -261,13 +328,13 @@ final class ScreenshotStore: ObservableObject {
                     return
                 }
 
-                restoreAppWindows(hiddenWindows)
                 isCapturing = false
 
                 switch result {
                 case .success(let image):
                     handleCapturedImage(image, mode: mode)
                 case .failure(let error) where error is CancellationError:
+                    restoreAppWindows(hiddenWindows)
                     showNotice(
                         title: "Capture Cancelled",
                         detail: "No changes made",
@@ -275,6 +342,7 @@ final class ScreenshotStore: ObservableObject {
                         tone: .neutral
                     )
                 case .failure(let error):
+                    restoreAppWindows(hiddenWindows)
                     errorMessage = error.localizedDescription
                     showNotice(
                         title: "Capture Failed",
@@ -298,7 +366,7 @@ final class ScreenshotStore: ObservableObject {
         let contentView = CaptureAnnotationView(store: self, session: session)
         let hostingController = NSHostingController(rootView: contentView)
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 980, height: 680),
+            contentRect: NSRect(x: 0, y: 0, width: 1120, height: 760),
             styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
             backing: .buffered,
             defer: false
@@ -307,7 +375,7 @@ final class ScreenshotStore: ObservableObject {
         window.titlebarAppearsTransparent = true
         window.backgroundColor = .windowBackgroundColor
         window.isOpaque = true
-        window.minSize = NSSize(width: 760, height: 520)
+        window.minSize = NSSize(width: 920, height: 620)
         window.contentViewController = hostingController
         window.center()
         window.isReleasedWhenClosed = false
@@ -393,6 +461,7 @@ final class ScreenshotStore: ObservableObject {
                 id: url.path(percentEncoded: false),
                 url: url,
                 fileName: url.lastPathComponent,
+                captureKind: CaptureKind.detect(from: url.lastPathComponent),
                 createdAt: createdAt,
                 modifiedAt: modifiedAt,
                 byteSize: byteSize,

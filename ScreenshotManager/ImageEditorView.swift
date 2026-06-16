@@ -172,7 +172,7 @@ struct CaptureAnnotationView: View {
                 .padding(.vertical, 10)
                 .background(AppTheme.toolbarBackground)
         }
-        .frame(minWidth: 760, minHeight: 520)
+        .frame(minWidth: 920, minHeight: 620)
         .background(AppTheme.windowBackground)
     }
 
@@ -203,17 +203,13 @@ struct CaptureAnnotationView: View {
                 .help("Close")
 
                 Button {
-                    store.finishAnnotatedCapture(document.renderedImage(), mode: .save)
+                    store.finishAnnotatedCapture(document.renderedImage(), mode: session.mode)
                 } label: {
-                    Label("Save", systemImage: "tray.and.arrow.down")
-                }
-
-                Button {
-                    store.finishAnnotatedCapture(document.renderedImage(), mode: .clipboard)
-                } label: {
-                    Label("Copy", systemImage: "doc.on.clipboard")
+                    Image(systemName: "checkmark")
+                        .frame(width: 28, height: 26)
                 }
                 .buttonStyle(.borderedProminent)
+                .help("Done")
             }
 
             HStack(spacing: 10) {

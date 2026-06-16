@@ -13,7 +13,8 @@ struct ContentView: View {
             let showsPreview = width >= 1080
 
             ZStack(alignment: .top) {
-                VisualEffectView(material: .hudWindow)
+                AppTheme.windowBackground
+                    .ignoresSafeArea()
 
                 if isCompact {
                     CompactLayoutView(
@@ -64,8 +65,8 @@ struct ContentView: View {
     }
 
     private func columns(for width: CGFloat) -> [GridItem] {
-        let minimum = width < 760 ? 132.0 : 168.0
-        let maximum = width < 760 ? 180.0 : 220.0
+        let minimum = width < 760 ? 170.0 : 220.0
+        let maximum = width < 760 ? 230.0 : 260.0
         return [GridItem(.adaptive(minimum: minimum, maximum: maximum), spacing: 14)]
     }
 
@@ -174,7 +175,7 @@ private struct CompactHeaderView: View {
                         .frame(maxWidth: .infinity)
                 }
                 .buttonStyle(.borderedProminent)
-                .disabled(store.isCapturing || !store.screenRecordingAccessGranted)
+                .disabled(store.isCapturing)
 
                 Button {
                     store.captureAndSaveToLibrary()
@@ -183,17 +184,7 @@ private struct CompactHeaderView: View {
                         .frame(maxWidth: .infinity)
                 }
                 .buttonStyle(.bordered)
-                .disabled(store.isCapturing || !store.screenRecordingAccessGranted)
-            }
-
-            if !store.screenRecordingAccessGranted {
-                Button {
-                    store.requestScreenRecordingAccess()
-                } label: {
-                    Label("Allow Screen Recording", systemImage: "lock.open")
-                        .frame(maxWidth: .infinity)
-                }
-                .buttonStyle(.bordered)
+                .disabled(store.isCapturing)
             }
 
             HotkeyRecorderView(
@@ -205,7 +196,7 @@ private struct CompactHeaderView: View {
             .frame(height: 34)
         }
         .padding(14)
-        .background(.ultraThinMaterial)
+        .background(AppTheme.sidebarBackground)
     }
 }
 
@@ -213,43 +204,40 @@ private struct SidebarView: View {
     @ObservedObject var store: ScreenshotStore
 
     var body: some View {
-        ZStack {
-            VisualEffectView(material: .sidebar)
+        ScrollView {
+            VStack(alignment: .leading, spacing: 18) {
+                VStack(alignment: .leading, spacing: 8) {
+                    Label("Screenshot Manager", systemImage: "camera.viewfinder")
+                        .font(AppTypography.productTitle)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.78)
 
-            ScrollView {
-                VStack(alignment: .leading, spacing: 18) {
-                    VStack(alignment: .leading, spacing: 8) {
-                        Label("Screenshot Manager", systemImage: "camera.viewfinder")
-                            .font(AppTypography.productTitle)
-                            .lineLimit(1)
-                            .minimumScaleFactor(0.78)
-
-                        Text(store.hotkey.displayString)
-                            .font(AppTypography.helper)
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
-                    }
-
-                    CaptureControlsView(store: store)
-                    HotkeySectionView(store: store)
-
-                    VStack(spacing: 10) {
-                        StatTile(title: "Indexed", value: "\(store.items.count)", icon: "square.grid.2x2")
-                        StatTile(title: "Showing", value: "\(store.filteredItems.count)", icon: "line.3.horizontal.decrease.circle")
-                    }
-
-                    FolderSectionView(store: store)
-
-                    if let errorMessage = store.errorMessage {
-                        Label(errorMessage, systemImage: "exclamationmark.triangle")
-                            .font(.caption)
-                            .foregroundStyle(.red)
-                            .lineLimit(4)
-                    }
+                    Text(store.hotkey.displayString)
+                        .font(AppTypography.helper)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
                 }
-                .padding(18)
+
+                CaptureControlsView(store: store)
+                HotkeySectionView(store: store)
+
+                VStack(spacing: 10) {
+                    StatTile(title: "Indexed", value: "\(store.items.count)", icon: "square.grid.2x2")
+                    StatTile(title: "Showing", value: "\(store.filteredItems.count)", icon: "line.3.horizontal.decrease.circle")
+                }
+
+                FolderSectionView(store: store)
+
+                if let errorMessage = store.errorMessage {
+                    Label(errorMessage, systemImage: "exclamationmark.triangle")
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                        .lineLimit(4)
+                }
             }
+            .padding(18)
         }
+        .background(AppTheme.sidebarBackground)
     }
 }
 
@@ -278,7 +266,7 @@ private struct CaptureControlsView: View {
                     .frame(maxWidth: .infinity)
             }
             .buttonStyle(.borderedProminent)
-            .disabled(store.isCapturing || !store.screenRecordingAccessGranted)
+            .disabled(store.isCapturing)
 
             Button {
                 store.captureAndSaveToLibrary()
@@ -287,24 +275,13 @@ private struct CaptureControlsView: View {
                     .frame(maxWidth: .infinity)
             }
             .buttonStyle(.bordered)
-            .disabled(store.isCapturing || !store.screenRecordingAccessGranted)
-
-            if !store.screenRecordingAccessGranted {
-                Button {
-                    store.requestScreenRecordingAccess()
-                } label: {
-                    Label("Allow Screen Recording", systemImage: "lock.open")
-                        .frame(maxWidth: .infinity)
-                }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
-            }
+            .disabled(store.isCapturing)
         }
         .padding(12)
-        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 8))
+        .background(AppTheme.panelBackground, in: RoundedRectangle(cornerRadius: 8))
         .overlay {
             RoundedRectangle(cornerRadius: 8)
-                .stroke(.separator.opacity(0.35), lineWidth: 1)
+                .stroke(AppTheme.softBorder, lineWidth: 1)
         }
         .animation(.easeInOut(duration: 0.16), value: store.isCapturing)
     }
@@ -327,10 +304,10 @@ private struct HotkeySectionView: View {
             .frame(maxWidth: .infinity, minHeight: 34, maxHeight: 34)
         }
         .padding(12)
-        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 8))
+        .background(AppTheme.panelBackground, in: RoundedRectangle(cornerRadius: 8))
         .overlay {
             RoundedRectangle(cornerRadius: 8)
-                .stroke(.separator.opacity(0.35), lineWidth: 1)
+                .stroke(AppTheme.softBorder, lineWidth: 1)
         }
     }
 }
@@ -349,10 +326,10 @@ private struct FolderSectionView: View {
                 .foregroundStyle(.primary)
                 .padding(12)
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 8))
+                .background(AppTheme.contentBackground, in: RoundedRectangle(cornerRadius: 8))
                 .overlay {
                     RoundedRectangle(cornerRadius: 8)
-                        .stroke(.separator.opacity(0.25), lineWidth: 1)
+                        .stroke(AppTheme.softBorder, lineWidth: 1)
                 }
 
             Button {
@@ -398,10 +375,10 @@ private struct StatTile: View {
             Spacer()
         }
         .padding(12)
-        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 8))
+        .background(AppTheme.panelBackground, in: RoundedRectangle(cornerRadius: 8))
         .overlay {
             RoundedRectangle(cornerRadius: 8)
-                .stroke(.separator.opacity(0.3), lineWidth: 1)
+                .stroke(AppTheme.softBorder, lineWidth: 1)
         }
         .contentTransition(.numericText())
         .animation(.easeInOut(duration: 0.16), value: value)
@@ -430,7 +407,7 @@ private struct LibraryView: View {
             }
             .padding(.horizontal, 16)
             .frame(height: 50)
-            .background(.thinMaterial)
+            .background(AppTheme.toolbarBackground)
 
             if store.filteredItems.isEmpty {
                 EmptyStateView(isLoading: store.isLoading)
@@ -453,14 +430,13 @@ private struct LibraryView: View {
                                 Divider()
                                 Button("Delete", role: .destructive) { pendingDelete = item }
                             }
-                            .transition(.opacity)
                         }
                     }
                     .padding(18)
-                    .animation(.easeInOut(duration: 0.18), value: store.filteredItems)
                 }
             }
         }
+        .background(AppTheme.contentBackground)
     }
 }
 
@@ -470,27 +446,31 @@ private struct ScreenshotCard: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            ZStack {
-                RoundedRectangle(cornerRadius: 8)
-                    .fill(Color(nsColor: .controlBackgroundColor).opacity(0.45))
+            GeometryReader { proxy in
+                ZStack {
+                    RoundedRectangle(cornerRadius: 8)
+                        .fill(AppTheme.imageWellBackground)
 
-                if let image = NSImage(contentsOf: item.url) {
-                    Image(nsImage: image)
-                        .resizable()
-                        .scaledToFill()
-                        .frame(height: 118)
-                        .clipShape(RoundedRectangle(cornerRadius: 8))
-                } else {
-                    Image(systemName: "photo")
-                        .font(.largeTitle)
-                        .foregroundStyle(.secondary)
+                    if let image = NSImage(contentsOf: item.url) {
+                        Image(nsImage: image)
+                            .resizable()
+                            .scaledToFill()
+                            .frame(width: proxy.size.width, height: proxy.size.height)
+                            .clipped()
+                    } else {
+                        Image(systemName: "photo")
+                            .font(.largeTitle)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .clipShape(RoundedRectangle(cornerRadius: 8))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 8)
+                        .stroke(isSelected ? Color.accentColor : .clear, lineWidth: 3)
                 }
             }
-            .frame(height: 118)
-            .overlay {
-                RoundedRectangle(cornerRadius: 8)
-                    .stroke(isSelected ? Color.accentColor : .clear, lineWidth: 3)
-            }
+            .aspectRatio(1.55, contentMode: .fit)
+            .frame(maxWidth: .infinity)
 
             Text(item.fileName)
                 .font(AppTypography.itemTitle)
@@ -505,13 +485,14 @@ private struct ScreenshotCard: View {
             .foregroundStyle(.secondary)
         }
         .padding(10)
-        .background(isSelected ? Color.accentColor.opacity(0.12) : Color.clear, in: RoundedRectangle(cornerRadius: 8))
-        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 8))
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(isSelected ? AppTheme.selectedBackground : AppTheme.cardBackground, in: RoundedRectangle(cornerRadius: 8))
         .overlay {
             RoundedRectangle(cornerRadius: 8)
-                .stroke(.separator.opacity(isSelected ? 0.55 : 0.28), lineWidth: 1)
+                .stroke(isSelected ? Color.accentColor.opacity(0.72) : AppTheme.softBorder, lineWidth: 1)
         }
         .contentShape(RoundedRectangle(cornerRadius: 8))
+        .clipped()
         .animation(.easeInOut(duration: 0.16), value: isSelected)
     }
 }
@@ -523,7 +504,7 @@ private struct PreviewPane: View {
 
     var body: some View {
         ZStack {
-            VisualEffectView(material: .popover)
+            AppTheme.panelBackground
 
             if let item = store.selectedItem {
                 ScrollView {
@@ -533,7 +514,7 @@ private struct PreviewPane: View {
 
                         ZStack {
                             RoundedRectangle(cornerRadius: 8)
-                                .fill(Color(nsColor: .controlBackgroundColor).opacity(0.35))
+                                .fill(AppTheme.imageWellBackground)
 
                             if let image = NSImage(contentsOf: item.url) {
                                 Image(nsImage: image)
@@ -551,7 +532,7 @@ private struct PreviewPane: View {
                         .aspectRatio(1.2, contentMode: .fit)
                         .overlay {
                             RoundedRectangle(cornerRadius: 8)
-                                .stroke(.separator.opacity(0.25), lineWidth: 1)
+                                .stroke(AppTheme.softBorder, lineWidth: 1)
                         }
 
                         VStack(alignment: .leading, spacing: 8) {
@@ -608,7 +589,6 @@ private struct PreviewPane: View {
                         .font(.headline)
                         .foregroundStyle(.secondary)
                 }
-                .transition(.opacity)
             }
         }
         .animation(.easeInOut(duration: 0.18), value: store.selectedItem?.id)
@@ -648,10 +628,10 @@ private struct CaptureNoticeView: View {
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 10)
-        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 8))
+        .background(AppTheme.panelBackground, in: RoundedRectangle(cornerRadius: 8))
         .overlay {
             RoundedRectangle(cornerRadius: 8)
-                .stroke(.separator.opacity(0.35), lineWidth: 1)
+                .stroke(AppTheme.border, lineWidth: 1)
         }
         .frame(maxWidth: 360)
     }

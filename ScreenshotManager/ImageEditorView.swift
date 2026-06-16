@@ -29,13 +29,13 @@ struct ImageEditorView: View {
             }
             .padding(.horizontal, 18)
             .frame(height: 58)
-            .background(.thinMaterial)
+            .background(AppTheme.toolbarBackground)
 
             Divider()
 
             HStack(spacing: 0) {
                 ZStack {
-                    VisualEffectView(material: .underWindowBackground)
+                    AppTheme.contentBackground
 
                     if let workingImage {
                         Image(nsImage: workingImage)
@@ -55,7 +55,7 @@ struct ImageEditorView: View {
             }
         }
         .frame(minWidth: 760, minHeight: 520)
-        .background(.ultraThinMaterial)
+        .background(AppTheme.windowBackground)
         .onAppear {
             workingImage = NSImage(contentsOf: item.url)
         }
@@ -126,7 +126,7 @@ struct ImageEditorView: View {
             Spacer()
         }
         .padding(18)
-        .background(.ultraThinMaterial)
+        .background(AppTheme.sidebarBackground)
     }
 
     private func transform(_ operation: (NSImage) -> NSImage) {

@@ -40,12 +40,12 @@ struct SettingsView: View {
                         )
                         .foregroundStyle(store.screenRecordingAccessGranted ? .green : .orange)
 
-                        Button("Request") {
-                            store.requestScreenRecordingAccess()
-                        }
-
                         Button("Open Settings") {
                             store.openScreenRecordingSettings()
+                        }
+
+                        Button("Refresh") {
+                            store.refreshScreenRecordingAccess()
                         }
                     }
                 }

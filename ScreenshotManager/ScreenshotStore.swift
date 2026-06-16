@@ -38,10 +38,14 @@ final class ScreenshotStore: ObservableObject {
     init() {
         hotkey = AppHotkey.load()
 
-        if let savedPath = UserDefaults.standard.string(forKey: folderDefaultsKey) {
+        let defaultFolderURL = Self.defaultScreenshotFolder()
+
+        if let savedPath = UserDefaults.standard.string(forKey: folderDefaultsKey),
+           !Self.isDesktopFolder(URL(filePath: savedPath)) {
             folderURL = URL(filePath: savedPath)
         } else {
-            folderURL = Self.defaultScreenshotFolder()
+            folderURL = defaultFolderURL
+            UserDefaults.standard.set(defaultFolderURL.path(percentEncoded: false), forKey: folderDefaultsKey)
         }
 
         refreshScreenRecordingAccess()
@@ -105,29 +109,6 @@ final class ScreenshotStore: ObservableObject {
 
     func refreshScreenRecordingAccess() {
         screenRecordingAccessGranted = ScreenCaptureOverlayController.hasScreenCaptureAccess
-    }
-
-    func requestScreenRecordingAccess() {
-        if ScreenCaptureOverlayController.hasScreenCaptureAccess {
-            refreshScreenRecordingAccess()
-            showNotice(
-                title: "Screen Recording Allowed",
-                detail: "Capture is ready",
-                systemImage: "checkmark.shield",
-                tone: .success
-            )
-            return
-        }
-
-        ScreenCaptureOverlayController.requestScreenCaptureAccess()
-        refreshScreenRecordingAccess()
-        openScreenRecordingSettings()
-        showNotice(
-            title: "Restart Required",
-            detail: "After allowing access, quit and reopen the app",
-            systemImage: "lock.open",
-            tone: .neutral
-        )
     }
 
     func openScreenRecordingSettings() {
@@ -255,18 +236,6 @@ final class ScreenshotStore: ObservableObject {
 
         refreshScreenRecordingAccess()
 
-        guard screenRecordingAccessGranted else {
-            let message = ScreenCaptureOverlayError.screenRecordingPermissionRequired.localizedDescription
-            errorMessage = message
-            showNotice(
-                title: "Screen Recording Needed",
-                detail: "Allow access in Settings, then relaunch",
-                systemImage: "lock.rectangle",
-                tone: .failure
-            )
-            return
-        }
-
         isCapturing = true
         errorMessage = nil
         let hiddenWindows = hideVisibleAppWindowsForCapture()
@@ -372,11 +341,23 @@ final class ScreenshotStore: ObservableObject {
     }
 
     private static func defaultScreenshotFolder() -> URL {
-        FileManager.default.homeDirectoryForCurrentUser.appending(path: "Desktop")
+        let applicationSupportURL = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+            ?? FileManager.default.homeDirectoryForCurrentUser.appending(path: "Library/Application Support")
+
+        return applicationSupportURL
+            .appending(path: "Screenshot Manager", directoryHint: .isDirectory)
+            .appending(path: "Captures", directoryHint: .isDirectory)
+    }
+
+    private static func isDesktopFolder(_ url: URL) -> Bool {
+        let desktopURL = FileManager.default.homeDirectoryForCurrentUser.appending(path: "Desktop")
+        return url.standardizedFileURL.path(percentEncoded: false) == desktopURL.standardizedFileURL.path(percentEncoded: false)
     }
 
     nonisolated private static func scanFolder(_ folderURL: URL, imageExtensions: Set<String>) throws -> [ScreenshotItem] {
         let keys: Set<URLResourceKey> = [.isRegularFileKey, .contentModificationDateKey, .creationDateKey, .fileSizeKey]
+        try FileManager.default.createDirectory(at: folderURL, withIntermediateDirectories: true)
+
         let urls = try FileManager.default.contentsOfDirectory(
             at: folderURL,
             includingPropertiesForKeys: Array(keys),

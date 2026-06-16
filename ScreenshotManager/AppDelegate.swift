@@ -92,8 +92,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         )
         window.title = "Screenshot Manager"
         window.titlebarAppearsTransparent = true
-        window.backgroundColor = .clear
-        window.isOpaque = false
+        window.backgroundColor = .windowBackgroundColor
+        window.isOpaque = true
         window.hasShadow = true
         window.toolbarStyle = .unifiedCompact
         window.isReleasedWhenClosed = false

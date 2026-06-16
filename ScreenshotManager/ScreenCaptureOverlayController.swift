@@ -1,5 +1,6 @@
 import AppKit
 import CoreGraphics
+import ScreenCaptureKit
 
 @MainActor
 final class ScreenCaptureOverlayController {
@@ -14,18 +15,8 @@ final class ScreenCaptureOverlayController {
         CGPreflightScreenCaptureAccess()
     }
 
-    @discardableResult
-    static func requestScreenCaptureAccess() -> Bool {
-        CGRequestScreenCaptureAccess()
-    }
-
     func start(completion: @escaping (Result<NSImage, Error>) -> Void) {
         cancel()
-
-        guard Self.hasScreenCaptureAccess else {
-            completion(.failure(ScreenCaptureOverlayError.screenRecordingPermissionRequired))
-            return
-        }
 
         self.completion = completion
         windows = NSScreen.screens.map { screen in
@@ -79,19 +70,12 @@ final class ScreenCaptureOverlayController {
         Task { @MainActor in
             try? await Task.sleep(nanoseconds: 90_000_000)
 
-            let captureRect = Self.coreGraphicsRect(from: globalRect)
-            guard let cgImage = CGWindowListCreateImage(
-                captureRect,
-                .optionOnScreenOnly,
-                kCGNullWindowID,
-                [.bestResolution, .boundsIgnoreFraming]
-            ) else {
-                finish(.failure(ScreenCaptureOverlayError.captureFailed))
-                return
+            do {
+                let image = try await Self.captureImage(in: globalRect)
+                finish(.success(image))
+            } catch {
+                finish(.failure(error))
             }
-
-            let image = NSImage(cgImage: cgImage, size: globalRect.size)
-            finish(.success(image))
         }
     }
 
@@ -115,6 +99,39 @@ final class ScreenCaptureOverlayController {
             width: rect.width,
             height: rect.height
         )
+    }
+
+    private static func captureImage(in globalRect: NSRect) async throws -> NSImage {
+        let captureRect = coreGraphicsRect(from: globalRect)
+
+        if #available(macOS 15.2, *) {
+            let cgImage = try await screenCaptureKitImage(in: captureRect)
+            return NSImage(cgImage: cgImage, size: globalRect.size)
+        }
+
+        guard let cgImage = CGWindowListCreateImage(
+            captureRect,
+            .optionOnScreenOnly,
+            kCGNullWindowID,
+            [.bestResolution, .boundsIgnoreFraming]
+        ) else {
+            throw ScreenCaptureOverlayError.captureFailed
+        }
+
+        return NSImage(cgImage: cgImage, size: globalRect.size)
+    }
+
+    @available(macOS 15.2, *)
+    private static func screenCaptureKitImage(in rect: CGRect) async throws -> CGImage {
+        try await withCheckedThrowingContinuation { continuation in
+            SCScreenshotManager.captureImage(in: rect) { image, error in
+                if let image {
+                    continuation.resume(returning: image)
+                } else {
+                    continuation.resume(throwing: error ?? ScreenCaptureOverlayError.captureFailed)
+                }
+            }
+        }
     }
 }
 

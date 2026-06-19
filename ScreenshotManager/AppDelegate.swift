@@ -6,18 +6,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     let store = ScreenshotStore()
 
     private var windowController: NSWindowController?
-    private var statusItem: NSStatusItem?
+    private var settingsWindowController: NSWindowController?
     private let clipboardHotkeyID: UInt32 = 1
     private let saveHotkeyID: UInt32 = 2
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        NSApp.setActivationPolicy(.regular)
-        configureStatusItem()
+        NSApp.setActivationPolicy(.accessory)
         showWindow()
         registerGlobalHotkeys()
 
         store.hotkeysDidChange = { [weak self] in
             self?.registerGlobalHotkeys()
+        }
+
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 700_000_000)
+            store.requestRequiredPermissions()
         }
     }
 
@@ -25,8 +29,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         GlobalHotkeyManager.shared.unregister()
     }
 
+    func applicationSupportsSecureRestorableState(_ app: NSApplication) -> Bool {
+        false
+    }
+
+    func applicationShouldSaveApplicationState(_ sender: NSApplication) -> Bool {
+        false
+    }
+
+    func applicationShouldRestoreApplicationState(_ sender: NSApplication) -> Bool {
+        false
+    }
+
     func applicationDidBecomeActive(_ notification: Notification) {
-        store.refreshScreenRecordingAccess()
+        store.refreshRequiredPermissions()
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
@@ -34,48 +50,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return true
     }
 
-    @objc private func openManager() {
+    func openManagerWindow() {
         showWindow()
     }
 
-    @objc private func refreshLibrary() {
-        store.refresh()
-    }
-
-    @objc private func openSettings() {
-        NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
+    func openSettingsWindow() {
+        let window = currentSettingsWindow()
+        window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
-    }
-
-    @objc private func captureToClipboard() {
-        store.captureToClipboard()
-    }
-
-    @objc private func captureAndSave() {
-        store.captureAndSaveToLibrary()
-    }
-
-    @objc private func quitApp() {
-        NSApp.terminate(nil)
-    }
-
-    private func configureStatusItem() {
-        let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
-        item.button?.image = NSImage(systemSymbolName: "camera.viewfinder", accessibilityDescription: "Screenshot Manager")
-        item.button?.imagePosition = .imageOnly
-
-        let menu = NSMenu()
-        menu.addItem(NSMenuItem(title: "Capture to Clipboard", action: #selector(captureToClipboard), keyEquivalent: "c"))
-        menu.addItem(NSMenuItem(title: "Capture to Library", action: #selector(captureAndSave), keyEquivalent: "s"))
-        menu.addItem(.separator())
-        menu.addItem(NSMenuItem(title: "Open Manager", action: #selector(openManager), keyEquivalent: "o"))
-        menu.addItem(NSMenuItem(title: "Settings", action: #selector(openSettings), keyEquivalent: ","))
-        menu.addItem(NSMenuItem(title: "Refresh Library", action: #selector(refreshLibrary), keyEquivalent: "r"))
-        menu.addItem(.separator())
-        menu.addItem(NSMenuItem(title: "Quit", action: #selector(quitApp), keyEquivalent: "q"))
-        item.menu = menu
-
-        statusItem = item
     }
 
     private func registerGlobalHotkeys() {
@@ -97,23 +79,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func makeWindow() -> NSWindow {
-        let contentView = ContentView(store: store)
+        let contentView = ContentView(store: store) { [weak self] in
+            self?.openSettingsWindow()
+        }
         let hostingController = NSHostingController(rootView: contentView)
 
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 1180, height: 760),
-            styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
+            styleMask: [.titled, .closable, .miniaturizable, .resizable],
             backing: .buffered,
             defer: false
         )
         window.title = "Screenshot Manager"
-        window.titlebarAppearsTransparent = true
+        window.titleVisibility = .hidden
+        window.identifier = NSUserInterfaceItemIdentifier("ScreenshotManager.MainWindow")
+        window.titlebarAppearsTransparent = false
         window.backgroundColor = .windowBackgroundColor
         window.isOpaque = true
         window.hasShadow = true
         window.toolbarStyle = .unifiedCompact
         window.isReleasedWhenClosed = false
-        window.minSize = NSSize(width: 720, height: 520)
+        window.isRestorable = false
+        window.minSize = NSSize(width: 920, height: 580)
         window.contentViewController = hostingController
         window.center()
 
@@ -123,8 +110,42 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return window
     }
 
+    private func makeSettingsWindow() -> NSWindow {
+        let contentView = SettingsView(store: store)
+        let hostingController = NSHostingController(rootView: contentView)
+
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 900, height: 540),
+            styleMask: [.titled, .closable, .miniaturizable, .resizable],
+            backing: .buffered,
+            defer: false
+        )
+        window.title = "Screenshot Manager Settings"
+        window.titleVisibility = .hidden
+        window.identifier = NSUserInterfaceItemIdentifier("ScreenshotManager.SettingsWindow")
+        window.titlebarAppearsTransparent = false
+        window.backgroundColor = .windowBackgroundColor
+        window.isOpaque = true
+        window.hasShadow = true
+        window.toolbarStyle = .unifiedCompact
+        window.isReleasedWhenClosed = false
+        window.isRestorable = false
+        window.minSize = NSSize(width: 760, height: 480)
+        window.contentViewController = hostingController
+        window.center()
+
+        let controller = NSWindowController(window: window)
+        settingsWindowController = controller
+
+        return window
+    }
+
     private func currentWindow() -> NSWindow {
         windowController?.window ?? makeWindow()
+    }
+
+    private func currentSettingsWindow() -> NSWindow {
+        settingsWindowController?.window ?? makeSettingsWindow()
     }
 
     private func showWindow() {

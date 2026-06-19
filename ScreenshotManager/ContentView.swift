@@ -1,17 +1,26 @@
 import AppKit
-import ImageIO
 import SwiftUI
 
 struct ContentView: View {
     @ObservedObject var store: ScreenshotStore
+    let openSettings: () -> Void
+    @Environment(\.scenePhase) private var scenePhase
+    @AppStorage(AppPreferenceKeys.didCompleteOnboarding) private var didCompleteOnboarding = false
     @State private var pendingDelete: ScreenshotItem?
     @State private var editingItem: ScreenshotItem?
+    @State private var previewItem: ScreenshotItem?
+    @State private var showsOnboarding = false
+
+    init(store: ScreenshotStore, openSettings: @escaping () -> Void = {}) {
+        self.store = store
+        self.openSettings = openSettings
+    }
 
     var body: some View {
         GeometryReader { proxy in
             let width = proxy.size.width
-            let isCompact = width < 860
-            let showsPreview = width >= 1080
+            let isCompact = width < 760
+            let showsPreview = width >= 1180 && !store.filteredItems.isEmpty && store.selectedItem != nil
 
             ZStack(alignment: .top) {
                 AppTheme.windowBackground
@@ -22,17 +31,23 @@ struct ContentView: View {
                         store: store,
                         columns: columns(for: width),
                         pendingDelete: $pendingDelete,
-                        editingItem: $editingItem
+                        editingItem: $editingItem,
+                        previewItem: $previewItem,
+                        showGuide: presentOnboarding,
+                        openSettings: openSettings
                     )
                 } else {
                     RegularLayoutView(
                         store: store,
-                        columns: columns(for: showsPreview ? width - previewWidth(for: width) - sidebarWidth(for: width) : width - sidebarWidth(for: width)),
-                        sidebarWidth: sidebarWidth(for: width),
+                        columns: columns(for: width - sidebarWidth - (showsPreview ? previewWidth(for: width) : 0)),
+                        sidebarWidth: sidebarWidth,
                         previewWidth: previewWidth(for: width),
                         showsPreview: showsPreview,
                         pendingDelete: $pendingDelete,
-                        editingItem: $editingItem
+                        editingItem: $editingItem,
+                        previewItem: $previewItem,
+                        showGuide: presentOnboarding,
+                        openSettings: openSettings
                     )
                 }
 
@@ -42,10 +57,37 @@ struct ContentView: View {
                         .transition(.move(edge: .top).combined(with: .opacity))
                         .zIndex(2)
                 }
+
+                if showsOnboarding {
+                    OnboardingOverlayView(
+                        clipboardHotkey: store.clipboardHotkey.displayString,
+                        saveHotkey: store.saveHotkey.displayString,
+                        dismiss: completeOnboarding
+                    )
+                    .transition(.opacity)
+                    .zIndex(3)
+                }
+
+                if let previewItem {
+                    ScreenshotPreviewOverlayView(
+                        store: store,
+                        item: previewItem,
+                        close: closePreviewOverlay
+                    )
+                    .transition(.opacity.combined(with: .scale(scale: 0.985)))
+                    .zIndex(4)
+                }
             }
             .animation(.easeInOut(duration: 0.18), value: store.captureNotice)
-            .animation(.easeInOut(duration: 0.18), value: isCompact)
-            .animation(.easeInOut(duration: 0.18), value: showsPreview)
+            .animation(.spring(response: 0.32, dampingFraction: 0.86), value: isCompact)
+            .animation(.spring(response: 0.32, dampingFraction: 0.86), value: showsPreview)
+            .animation(.easeInOut(duration: 0.16), value: showsOnboarding)
+            .animation(.spring(response: 0.26, dampingFraction: 0.88), value: previewItem?.id)
+            .onExitCommand {
+                if previewItem != nil {
+                    closePreviewOverlay()
+                }
+            }
         }
         .alert(item: $pendingDelete) { item in
             Alert(
@@ -61,22 +103,77 @@ struct ContentView: View {
             ImageEditorView(store: store, item: item)
         }
         .task {
+            store.refreshRequiredPermissions()
             store.refresh()
+            scheduleFirstRunOnboarding()
+        }
+        .onChange(of: didCompleteOnboarding) { _, isComplete in
+            guard !isComplete else {
+                return
+            }
+
+            presentOnboarding()
+        }
+        .onChange(of: scenePhase) { _, phase in
+            guard phase == .active else {
+                return
+            }
+
+            store.refreshRequiredPermissions()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            store.refreshRequiredPermissions()
         }
     }
 
-    private func columns(for width: CGFloat) -> [GridItem] {
-        let minimum = width < 760 ? 170.0 : 220.0
-        let maximum = width < 760 ? 230.0 : 260.0
-        return [GridItem(.adaptive(minimum: minimum, maximum: maximum), spacing: 14)]
-    }
-
-    private func sidebarWidth(for width: CGFloat) -> CGFloat {
-        width < 1050 ? 224 : 246
+    private var sidebarWidth: CGFloat {
+        80
     }
 
     private func previewWidth(for width: CGFloat) -> CGFloat {
-        min(max(width * 0.29, 300), 380)
+        min(max(width * 0.28, 320), 400)
+    }
+
+    private func columns(for width: CGFloat) -> [GridItem] {
+        let availableWidth = max(width, 360)
+        let minimum = availableWidth < 620 ? 170.0 : 210.0
+        let maximum = availableWidth < 620 ? 220.0 : 260.0
+        return [GridItem(.adaptive(minimum: minimum, maximum: maximum), spacing: 14)]
+    }
+
+    private func scheduleFirstRunOnboarding() {
+        guard !didCompleteOnboarding else {
+            return
+        }
+
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 420_000_000)
+            presentOnboarding()
+        }
+    }
+
+    private func presentOnboarding() {
+        guard !showsOnboarding else {
+            return
+        }
+
+        withAnimation(.spring(response: 0.32, dampingFraction: 0.88)) {
+            showsOnboarding = true
+        }
+    }
+
+    private func completeOnboarding() {
+        didCompleteOnboarding = true
+
+        withAnimation(.easeInOut(duration: 0.16)) {
+            showsOnboarding = false
+        }
+    }
+
+    private func closePreviewOverlay() {
+        withAnimation(.easeInOut(duration: 0.14)) {
+            previewItem = nil
+        }
     }
 }
 
@@ -88,10 +185,13 @@ private struct RegularLayoutView: View {
     let showsPreview: Bool
     @Binding var pendingDelete: ScreenshotItem?
     @Binding var editingItem: ScreenshotItem?
+    @Binding var previewItem: ScreenshotItem?
+    let showGuide: () -> Void
+    let openSettings: () -> Void
 
     var body: some View {
         HStack(spacing: 0) {
-            SidebarView(store: store)
+            SidebarView(store: store, showGuide: showGuide, openSettings: openSettings)
                 .frame(width: sidebarWidth)
 
             Divider()
@@ -100,9 +200,11 @@ private struct RegularLayoutView: View {
                 store: store,
                 columns: columns,
                 pendingDelete: $pendingDelete,
-                editingItem: $editingItem
+                editingItem: $editingItem,
+                previewItem: $previewItem,
+                showGuide: showGuide
             )
-            .frame(minWidth: 360)
+            .frame(minWidth: 420)
 
             if showsPreview {
                 Divider()
@@ -110,7 +212,8 @@ private struct RegularLayoutView: View {
                 PreviewPane(
                     store: store,
                     pendingDelete: $pendingDelete,
-                    editingItem: $editingItem
+                    editingItem: $editingItem,
+                    previewItem: $previewItem
                 )
                 .frame(width: previewWidth)
                 .transition(.opacity)
@@ -124,10 +227,13 @@ private struct CompactLayoutView: View {
     let columns: [GridItem]
     @Binding var pendingDelete: ScreenshotItem?
     @Binding var editingItem: ScreenshotItem?
+    @Binding var previewItem: ScreenshotItem?
+    let showGuide: () -> Void
+    let openSettings: () -> Void
 
     var body: some View {
         VStack(spacing: 0) {
-            CompactHeaderView(store: store)
+            CompactHeaderView(store: store, showGuide: showGuide)
 
             Divider()
 
@@ -135,7 +241,9 @@ private struct CompactLayoutView: View {
                 store: store,
                 columns: columns,
                 pendingDelete: $pendingDelete,
-                editingItem: $editingItem
+                editingItem: $editingItem,
+                previewItem: $previewItem,
+                showGuide: showGuide
             )
         }
     }
@@ -143,66 +251,29 @@ private struct CompactLayoutView: View {
 
 private struct CompactHeaderView: View {
     @ObservedObject var store: ScreenshotStore
+    let showGuide: () -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack(alignment: .top, spacing: 12) {
-                VStack(alignment: .leading, spacing: 4) {
-                    Label("Screenshot Manager", systemImage: "camera.viewfinder")
-                        .font(AppTypography.productTitle)
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.82)
-                    VStack(alignment: .leading, spacing: 2) {
-                        Label(store.clipboardHotkey.displayString, systemImage: "doc.on.clipboard")
-                        Label(store.saveHotkey.displayString, systemImage: "tray.and.arrow.down")
-                    }
-                    .font(AppTypography.helper)
-                    .foregroundStyle(.secondary)
+        VStack(spacing: 10) {
+            HStack(spacing: 12) {
+                BrandMarkView(isActive: store.isCapturing)
+                    .frame(width: 30, height: 30)
+
+                Text("Screenshot Manager")
+                    .font(AppTypography.productTitle)
                     .lineLimit(1)
-                }
+                    .minimumScaleFactor(0.82)
 
-                Spacer()
+                Spacer(minLength: 12)
 
-                HStack(spacing: 8) {
-                    Button {
-                        NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
-                    } label: {
-                        Image(systemName: "gearshape")
-                    }
-                    .buttonStyle(.bordered)
-                    .help("Settings")
-
-                    Button {
-                        store.refresh()
-                    } label: {
-                        Image(systemName: "arrow.clockwise")
-                    }
-                    .buttonStyle(.bordered)
-                    .help("Refresh")
-                }
-            }
-
-            HStack(spacing: 10) {
-                Button {
-                    store.captureToClipboard()
-                } label: {
-                    Label(store.isCapturing ? "Capturing..." : "Clipboard", systemImage: "doc.on.clipboard")
-                        .frame(maxWidth: .infinity)
-                }
-                .buttonStyle(.borderedProminent)
-                .disabled(store.isCapturing)
-
-                Button {
-                    store.captureAndSaveToLibrary()
-                } label: {
-                    Label("Library", systemImage: "tray.and.arrow.down")
-                        .frame(maxWidth: .infinity)
+                Button(action: showGuide) {
+                    Image(systemName: "questionmark.circle")
                 }
                 .buttonStyle(.bordered)
-                .disabled(store.isCapturing)
+                .help("Guide")
             }
 
-            HotkeySummaryView(store: store)
+            CaptureButtonRow(store: store, isCompact: true)
         }
         .padding(14)
         .background(AppTheme.sidebarBackground)
@@ -211,218 +282,266 @@ private struct CompactHeaderView: View {
 
 private struct SidebarView: View {
     @ObservedObject var store: ScreenshotStore
+    let showGuide: () -> Void
+    let openSettings: () -> Void
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 18) {
-                VStack(alignment: .leading, spacing: 8) {
-                    Label("Screenshot Manager", systemImage: "camera.viewfinder")
-                        .font(AppTypography.productTitle)
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.78)
+        VStack(spacing: 12) {
+            Spacer()
+                .frame(height: 14)
 
-                    HotkeySummaryView(store: store)
-                }
+            BrandMarkView(isActive: store.isCapturing)
+                .help("Screenshot Manager")
+                .padding(.bottom, 8)
 
-                CaptureControlsView(store: store)
+            RailIconButton(
+                title: "Library",
+                systemImage: "photo.stack",
+                tint: AppTheme.captureBlue,
+                isSelected: true
+            ) {}
 
-                VStack(spacing: 10) {
-                    StatTile(title: "Indexed", value: "\(store.items.count)", icon: "square.grid.2x2")
-                    StatTile(title: "Showing", value: "\(store.filteredItems.count)", icon: "line.3.horizontal.decrease.circle")
-                }
+            RailIconButton(
+                title: store.isCapturing ? "Capturing" : "Clipboard",
+                systemImage: "doc.on.clipboard",
+                tint: AppTheme.libraryAmber,
+                isBusy: store.isCapturing,
+                isDisabled: store.isCapturing
+            ) {
+                store.captureToClipboard()
+            }
 
-                FolderSectionView(store: store)
+            RailIconButton(
+                title: "Capture",
+                systemImage: "tray.and.arrow.down",
+                tint: AppTheme.successGreen,
+                isDisabled: store.isCapturing
+            ) {
+                store.captureAndSaveToLibrary()
+            }
 
-                if let errorMessage = store.errorMessage {
-                    Label(errorMessage, systemImage: "exclamationmark.triangle")
-                        .font(.caption)
-                        .foregroundStyle(.red)
-                        .lineLimit(4)
+            RailIconButton(
+                title: "Refresh",
+                systemImage: "arrow.clockwise",
+                tint: AppTheme.settingsViolet
+            ) {
+                store.refresh()
+            }
+
+            if let errorMessage = store.errorMessage,
+               errorMessage != ScreenCaptureOverlayError.screenRecordingPermissionRequired.localizedDescription {
+                RailIcon(
+                    systemImage: "exclamationmark.triangle",
+                    isSelected: false,
+                    tint: AppTheme.dangerCoral,
+                    foregroundStyle: AnyShapeStyle(AppTheme.dangerCoral)
+                )
+                .help(errorMessage)
+            }
+
+            Spacer(minLength: 12)
+
+            RailIconButton(
+                title: "Guide",
+                systemImage: "questionmark.circle",
+                tint: AppTheme.libraryAmber
+            ) {
+                showGuide()
+            }
+
+            Button {
+                openSettings()
+            } label: {
+                VStack(spacing: 3) {
+                    RailIcon(systemImage: "gearshape", isSelected: false, tint: AppTheme.settingsViolet)
+                    Text("Settings")
+                        .font(.system(size: 9, weight: .medium))
+                        .foregroundStyle(.secondary)
                 }
             }
-            .padding(18)
+            .buttonStyle(.plain)
+            .help("Settings")
         }
+        .padding(.vertical, 14)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(AppTheme.sidebarBackground)
     }
 }
 
-private struct CaptureControlsView: View {
-    @ObservedObject var store: ScreenshotStore
+private struct RailIconButton: View {
+    let title: String
+    let systemImage: String
+    let tint: Color
+    var isSelected = false
+    var isBusy = false
+    var isDisabled = false
+    let action: () -> Void
+    @State private var isHovering = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack {
-                Text("Capture")
-                    .font(AppTypography.sectionTitle)
-
-                Spacer()
-
-                if store.isCapturing {
-                    ProgressView()
-                        .controlSize(.small)
-                        .transition(.opacity)
-                }
+        Button(action: action) {
+            VStack(spacing: 3) {
+                RailIcon(
+                    systemImage: systemImage,
+                    isSelected: isSelected,
+                    isHovering: isHovering,
+                    isBusy: isBusy,
+                    tint: tint,
+                    foregroundStyle: foregroundStyle
+                )
+                Text(title)
+                    .font(.system(size: 9, weight: .medium))
+                    .foregroundStyle(isSelected ? tint : .secondary)
+                    .lineLimit(1)
             }
-
-            Button {
-                store.captureToClipboard()
-            } label: {
-                Label(store.isCapturing ? "Capturing..." : "Clipboard", systemImage: "doc.on.clipboard")
-                    .frame(maxWidth: .infinity)
-            }
-            .buttonStyle(.borderedProminent)
-            .disabled(store.isCapturing)
-
-            Button {
-                store.captureAndSaveToLibrary()
-            } label: {
-                Label("Library", systemImage: "tray.and.arrow.down")
-                    .frame(maxWidth: .infinity)
-            }
-            .buttonStyle(.bordered)
-            .disabled(store.isCapturing)
         }
-        .padding(12)
-        .background(AppTheme.panelBackground, in: RoundedRectangle(cornerRadius: 8))
-        .overlay {
-            RoundedRectangle(cornerRadius: 8)
-                .stroke(AppTheme.softBorder, lineWidth: 1)
+        .buttonStyle(.plain)
+        .disabled(isDisabled)
+        .opacity(isDisabled ? 0.45 : 1)
+        .help(title)
+        .onHover { isHovering = $0 }
+    }
+
+    private var foregroundStyle: AnyShapeStyle {
+        if isSelected {
+            return AnyShapeStyle(.white)
         }
-        .animation(.easeInOut(duration: 0.16), value: store.isCapturing)
+
+        return AnyShapeStyle(tint)
     }
 }
 
-private struct HotkeySummaryView: View {
-    @ObservedObject var store: ScreenshotStore
+private struct RailIcon: View {
+    let systemImage: String
+    var isSelected = false
+    var isHovering = false
+    var isBusy = false
+    var tint: Color = AppTheme.captureBlue
+    var foregroundStyle: AnyShapeStyle = AnyShapeStyle(.secondary)
+    @State private var pulse = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack {
-                Text("Hotkeys")
-                    .font(AppTypography.sectionTitle)
-
-                Spacer()
-
-                Button {
-                    NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
-                } label: {
-                    Image(systemName: "gearshape")
-                }
-                .buttonStyle(.borderless)
-                .help("Settings")
+        Image(systemName: systemImage)
+            .font(.system(size: 16, weight: .semibold))
+            .foregroundStyle(foregroundStyle)
+            .frame(width: 32, height: 32)
+            .background(background, in: RoundedRectangle(cornerRadius: 8))
+            .overlay {
+                RoundedRectangle(cornerRadius: 8)
+                    .stroke(isSelected ? Color.white.opacity(0.18) : AppTheme.softBorder.opacity(isHovering ? 1 : 0), lineWidth: 1)
             }
+            .overlay(alignment: .topTrailing) {
+                if isBusy {
+                    Circle()
+                        .fill(AppTheme.libraryAmber)
+                        .frame(width: 7, height: 7)
+                        .offset(x: 2, y: -2)
+                        .opacity(pulse ? 1 : 0.45)
+                }
+            }
+            .scaleEffect(isBusy && pulse ? 1.04 : 1)
+            .onAppear {
+                pulse = true
+            }
+            .animation(isBusy ? .easeInOut(duration: 0.82).repeatForever(autoreverses: true) : .easeInOut(duration: 0.16), value: pulse)
+    }
 
-            Label(store.clipboardHotkey.displayString, systemImage: "doc.on.clipboard")
-                .lineLimit(1)
+    private var background: Color {
+        if isSelected {
+            return tint
+        }
 
-            Label(store.saveHotkey.displayString, systemImage: "tray.and.arrow.down")
-                .lineLimit(1)
+        if isHovering {
+            return tint.opacity(0.18)
         }
-        .font(AppTypography.helper)
-        .foregroundStyle(.secondary)
-        .padding(12)
-        .background(AppTheme.panelBackground, in: RoundedRectangle(cornerRadius: 8))
-        .overlay {
-            RoundedRectangle(cornerRadius: 8)
-                .stroke(AppTheme.softBorder, lineWidth: 1)
-        }
+
+        return tint.opacity(0.11)
     }
 }
 
-private struct SettingsShortcutButton: View {
+struct BrandMarkView: View {
+    let isActive: Bool
+    @State private var pulse = false
+
     var body: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 10)
+                .fill(AppTheme.captureBlue)
+
+            RoundedRectangle(cornerRadius: 7)
+                .stroke(Color.white.opacity(0.34), lineWidth: 1)
+                .frame(width: 22, height: 18)
+
+            Circle()
+                .fill(Color.white)
+                .frame(width: 5, height: 5)
+                .offset(x: 6, y: -5)
+
+            RoundedRectangle(cornerRadius: 2)
+                .fill(AppTheme.libraryAmber)
+                .frame(width: 12, height: 3)
+                .offset(x: -2, y: 10)
+        }
+        .frame(width: 34, height: 34)
+        .shadow(color: AppTheme.captureBlue.opacity(isActive ? 0.38 : 0.18), radius: isActive ? 10 : 4, x: 0, y: 2)
+        .scaleEffect(isActive && pulse ? 1.06 : 1)
+        .onAppear {
+            pulse = true
+        }
+        .animation(isActive ? .easeInOut(duration: 0.9).repeatForever(autoreverses: true) : .easeInOut(duration: 0.2), value: pulse)
+    }
+}
+
+private struct CaptureButtonRow: View {
+    @ObservedObject var store: ScreenshotStore
+    let isCompact: Bool
+
+    var body: some View {
+        Group {
+            if isCompact {
+                HStack(spacing: 8) {
+                    captureClipboardButton
+                    captureLibraryButton
+                }
+            } else {
+                VStack(spacing: 8) {
+                    captureClipboardButton
+                    captureLibraryButton
+                }
+            }
+        }
+        .controlSize(isCompact ? .regular : .large)
+    }
+
+    private var captureClipboardButton: some View {
         Button {
-            NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
+            store.captureToClipboard()
         } label: {
-            Label("Settings", systemImage: "gearshape")
+            Label(store.isCapturing ? "Capturing..." : "Clipboard", systemImage: "doc.on.clipboard")
+                .frame(maxWidth: .infinity)
+        }
+        .buttonStyle(.borderedProminent)
+        .disabled(store.isCapturing)
+    }
+
+    private var captureLibraryButton: some View {
+        Button {
+            store.captureAndSaveToLibrary()
+        } label: {
+            Label("Library", systemImage: "tray.and.arrow.down")
                 .frame(maxWidth: .infinity)
         }
         .buttonStyle(.bordered)
+        .disabled(store.isCapturing)
     }
+
 }
 
-private struct FolderSectionView: View {
-    @ObservedObject var store: ScreenshotStore
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("Library")
-                .font(AppTypography.sectionTitle)
-
-            Text(store.folderURL.path(percentEncoded: false))
-                .font(.callout)
-                .lineLimit(3)
-                .foregroundStyle(.primary)
-                .padding(12)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background(AppTheme.contentBackground, in: RoundedRectangle(cornerRadius: 8))
-                .overlay {
-                    RoundedRectangle(cornerRadius: 8)
-                        .stroke(AppTheme.softBorder, lineWidth: 1)
-                }
-
-            Button {
-                store.captureAndSaveToLibrary()
-            } label: {
-                Label("Capture to Library", systemImage: "tray.and.arrow.down")
-                    .frame(maxWidth: .infinity)
-            }
-            .buttonStyle(.bordered)
-            .disabled(store.isCapturing)
-
-            Button {
-                store.chooseFolder()
-            } label: {
-                Label("Choose Folder", systemImage: "folder")
-                    .frame(maxWidth: .infinity)
-            }
-            .buttonStyle(.borderedProminent)
-
-            Button {
-                store.refresh()
-            } label: {
-                Label("Refresh", systemImage: "arrow.clockwise")
-                    .frame(maxWidth: .infinity)
-            }
-            .buttonStyle(.bordered)
-
-            SettingsShortcutButton()
-        }
-    }
-}
-
-private struct StatTile: View {
-    let title: String
-    let value: String
-    let icon: String
-
-    var body: some View {
-        HStack(spacing: 12) {
-            Image(systemName: icon)
-                .font(.system(size: 18, weight: .medium))
-                .foregroundStyle(.white)
-                .frame(width: 36, height: 36)
-                .background(Color.accentColor.opacity(0.9), in: RoundedRectangle(cornerRadius: 8))
-
-            VStack(alignment: .leading, spacing: 2) {
-                Text(value)
-                    .font(.title3.weight(.semibold))
-                Text(title)
-                    .font(AppTypography.helper)
-                    .foregroundStyle(.secondary)
-            }
-
-            Spacer()
-        }
-        .padding(12)
-        .background(AppTheme.panelBackground, in: RoundedRectangle(cornerRadius: 8))
-        .overlay {
-            RoundedRectangle(cornerRadius: 8)
-                .stroke(AppTheme.softBorder, lineWidth: 1)
-        }
-        .contentTransition(.numericText())
-        .animation(.easeInOut(duration: 0.16), value: value)
-    }
+private enum LibrarySortOrder: String, CaseIterable {
+    case dateDesc = "Newest First"
+    case dateAsc = "Oldest First"
+    case nameAsc = "Name A–Z"
+    case sizeDesc = "Largest First"
 }
 
 private struct LibraryView: View {
@@ -430,67 +549,257 @@ private struct LibraryView: View {
     let columns: [GridItem]
     @Binding var pendingDelete: ScreenshotItem?
     @Binding var editingItem: ScreenshotItem?
+    @Binding var previewItem: ScreenshotItem?
+    let showGuide: () -> Void
+    @State private var isDropTarget = false
+    @State private var sortOrder: LibrarySortOrder = .dateDesc
+
+    private var sortedItems: [ScreenshotItem] {
+        switch sortOrder {
+        case .dateDesc:
+            return store.filteredItems.sorted { $0.createdAt > $1.createdAt }
+        case .dateAsc:
+            return store.filteredItems.sorted { $0.createdAt < $1.createdAt }
+        case .nameAsc:
+            return store.filteredItems.sorted { $0.fileName.localizedCompare($1.fileName) == .orderedAscending }
+        case .sizeDesc:
+            return store.filteredItems.sorted { $0.byteSize > $1.byteSize }
+        }
+    }
 
     var body: some View {
         VStack(spacing: 0) {
-            HStack(spacing: 12) {
-                Image(systemName: "magnifyingglass")
-                    .foregroundStyle(.secondary)
+            LibraryToolbarView(store: store, sortOrder: $sortOrder)
 
-                TextField("Search screenshots", text: $store.searchText)
-                    .textFieldStyle(.plain)
-
-                if store.isLoading {
-                    ProgressView()
-                        .controlSize(.small)
-                }
-            }
-            .padding(.horizontal, 16)
-            .frame(height: 50)
-            .background(AppTheme.toolbarBackground)
+            Divider()
 
             if store.filteredItems.isEmpty {
-                EmptyStateView(isLoading: store.isLoading)
+                EmptyStateView(store: store)
+                    .transition(.opacity.combined(with: .scale(scale: 0.98)))
             } else {
                 ScrollView {
-                    LazyVGrid(columns: columns, spacing: 14) {
-                        ForEach(store.filteredItems) { item in
+                    LazyVGrid(columns: columns, alignment: .leading, spacing: 14) {
+                        ForEach(sortedItems) { item in
                             ScreenshotCard(
+                                store: store,
                                 item: item,
-                                isSelected: item.id == store.selectedItem?.id
+                                isSelected: item.id == store.selectedItem?.id,
+                                onSelect: {
+                                    withAnimation(.spring(response: 0.26, dampingFraction: 0.82)) {
+                                        store.selectedItem = item
+                                    }
+                                },
+                                onOpen: {
+                                    withAnimation(.spring(response: 0.26, dampingFraction: 0.88)) {
+                                        previewItem = item
+                                    }
+                                },
+                                onEdit: { store.openAnnotationEditor(for: item) },
+                                onCopy: { store.copy(item) },
+                                onDelete: { pendingDelete = item }
                             )
-                            .onTapGesture {
-                                store.selectedItem = item
-                            }
                             .contextMenu {
-                                Button("Edit") { editingItem = item }
-                                Button("Open") { store.open(item) }
-                                Button("Reveal in Finder") { store.revealInFinder(item) }
+                                Button("Edit") { store.openAnnotationEditor(for: item) }
+                                Button("Open Preview") { previewItem = item }
+                                if !item.isTemporary {
+                                    Button("Open in Preview") { store.open(item) }
+                                    Button("Reveal in Finder") { store.revealInFinder(item) }
+                                }
                                 Button("Copy Image") { store.copy(item) }
                                 Divider()
                                 Button("Delete", role: .destructive) { pendingDelete = item }
                             }
+                            .transition(.asymmetric(
+                                insertion: .opacity.combined(with: .scale(scale: 0.96)),
+                                removal: .opacity
+                            ))
                         }
                     }
-                    .padding(18)
+                    .padding(22)
+                    .frame(maxWidth: .infinity, alignment: .topLeading)
                 }
+                .transition(.opacity.combined(with: .move(edge: .bottom)))
             }
         }
+        .contentShape(Rectangle())
         .background(AppTheme.contentBackground)
+        .overlay {
+            if isDropTarget {
+                LibraryDropOverlay()
+                    .padding(22)
+                    .transition(.opacity.combined(with: .scale(scale: 0.985)))
+                    .allowsHitTesting(false)
+            }
+        }
+        .onDrop(
+            of: ScreenshotStore.imageDropTypeIdentifiers,
+            isTargeted: $isDropTarget
+        ) { providers in
+            store.importDroppedItems(providers)
+            return true
+        }
+        .animation(.spring(response: 0.34, dampingFraction: 0.88), value: store.filteredItems.isEmpty)
+        .animation(.spring(response: 0.34, dampingFraction: 0.88), value: store.filteredItems.count)
+        .animation(.easeInOut(duration: 0.14), value: isDropTarget)
+    }
+}
+
+private struct LibraryDropOverlay: View {
+    var body: some View {
+        RoundedRectangle(cornerRadius: 10)
+            .fill(AppTheme.captureBlue.opacity(0.10))
+            .overlay {
+                RoundedRectangle(cornerRadius: 10)
+                    .strokeBorder(AppTheme.captureBlue, style: StrokeStyle(lineWidth: 2, dash: [7, 5]))
+            }
+            .overlay {
+                VStack(spacing: 10) {
+                    Image(systemName: "tray.and.arrow.down")
+                        .font(.system(size: 26, weight: .semibold))
+                        .foregroundStyle(AppTheme.captureBlue)
+
+                    Text("Drop images to import")
+                        .font(AppTypography.sectionTitle)
+
+                    Text("Photos, Finder, PNG, JPG, HEIC, TIFF, or WebP")
+                        .font(AppTypography.helper)
+                        .foregroundStyle(.secondary)
+                }
+                .padding(18)
+                .background(AppTheme.panelBackground, in: RoundedRectangle(cornerRadius: 10))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 10)
+                        .stroke(AppTheme.softBorder, lineWidth: 1)
+                }
+            }
+    }
+}
+
+private struct LibraryToolbarView: View {
+    @ObservedObject var store: ScreenshotStore
+    @Binding var sortOrder: LibrarySortOrder
+
+    var body: some View {
+        HStack(spacing: 10) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Library")
+                    .font(AppTypography.paneTitle)
+
+                Text(itemCountText)
+                    .font(AppTypography.helper)
+                    .foregroundStyle(.secondary)
+                    .contentTransition(.numericText())
+            }
+
+            Spacer(minLength: 12)
+
+            Menu {
+                ForEach(LibrarySortOrder.allCases, id: \.self) { order in
+                    Button {
+                        sortOrder = order
+                    } label: {
+                        if sortOrder == order {
+                            Label(order.rawValue, systemImage: "checkmark")
+                        } else {
+                            Text(order.rawValue)
+                        }
+                    }
+                }
+            } label: {
+                HStack(spacing: 5) {
+                    Image(systemName: "arrow.up.arrow.down")
+                    Text(sortOrder.rawValue)
+                }
+                .font(AppTypography.helper)
+            }
+            .menuStyle(.borderlessButton)
+            .fixedSize()
+
+            SearchField(text: $store.searchText)
+                .frame(width: 260)
+
+            if store.isLoading {
+                ProgressView()
+                    .controlSize(.small)
+            }
+        }
+        .padding(.horizontal, 22)
+        .padding(.top, 6)
+        .frame(height: 78)
+        .background(AppTheme.toolbarBackground)
+        .animation(.spring(response: 0.28, dampingFraction: 0.9), value: store.filteredItems.count)
+    }
+
+    private var itemCountText: String {
+        let count = store.filteredItems.count
+        return "\(count) \(count == 1 ? "item" : "items")"
+    }
+}
+
+private struct SearchField: View {
+    @Binding var text: String
+    @FocusState private var isFocused: Bool
+    @State private var isHovering = false
+
+    var body: some View {
+        HStack(spacing: 7) {
+            Image(systemName: "magnifyingglass")
+                .foregroundStyle(.secondary)
+
+            TextField("Search screenshots", text: $text)
+                .textFieldStyle(.plain)
+                .focused($isFocused)
+
+            if !text.isEmpty {
+                Button {
+                    withAnimation(.easeInOut(duration: 0.14)) {
+                        text = ""
+                    }
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+                .help("Clear Search")
+            }
+        }
+        .font(AppTypography.itemTitle)
+        .padding(.horizontal, 11)
+        .frame(height: 34)
+        .background(searchBackground, in: RoundedRectangle(cornerRadius: 8))
+        .overlay {
+            RoundedRectangle(cornerRadius: 8)
+                .stroke(isFocused ? Color.accentColor.opacity(0.58) : AppTheme.softBorder, lineWidth: 1)
+        }
+        .onHover { isHovering = $0 }
+        .animation(.easeInOut(duration: 0.16), value: isFocused)
+        .animation(.easeInOut(duration: 0.14), value: isHovering)
+    }
+
+    private var searchBackground: Color {
+        isFocused || isHovering ? AppTheme.searchFocusedBackground : AppTheme.searchFieldBackground
     }
 }
 
 private struct ScreenshotCard: View {
+    @ObservedObject var store: ScreenshotStore
     let item: ScreenshotItem
     let isSelected: Bool
+    let onSelect: () -> Void
+    let onOpen: () -> Void
+    let onEdit: () -> Void
+    let onCopy: () -> Void
+    let onDelete: () -> Void
     @State private var thumbnail: NSImage?
     @State private var isHovering = false
+    @State private var didAppear = false
+    @State private var isOpeningPreview = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 7) {
             GeometryReader { proxy in
                 ZStack {
-                    RoundedRectangle(cornerRadius: 8)
+                    Rectangle()
                         .fill(AppTheme.imageWellBackground)
 
                     if let thumbnail {
@@ -499,33 +808,58 @@ private struct ScreenshotCard: View {
                             .scaledToFill()
                             .frame(width: proxy.size.width, height: proxy.size.height)
                             .clipped()
+                            .transition(.opacity.combined(with: .scale(scale: 1.015)))
                     } else {
-                        Image(systemName: "photo")
-                            .font(.largeTitle)
-                            .foregroundStyle(.secondary)
+                        ThumbnailPlaceholderView()
                     }
 
                     VStack {
                         HStack {
                             CaptureKindBadge(kind: item.captureKind)
                             Spacer()
+                            if isHovering || isSelected {
+                                HStack(spacing: 4) {
+                                    Button { openWithMotion() } label: {
+                                        CardActionPill(title: "Preview", systemImage: "arrow.up.left.and.arrow.down.right")
+                                    }
+                                    .buttonStyle(.plain)
+                                    .help("Open Preview")
+                                    Button { onEdit() } label: {
+                                        CardActionPill(title: "Edit", systemImage: "pencil")
+                                    }
+                                    .buttonStyle(.plain)
+                                    .help("Edit")
+                                    Button { onCopy() } label: {
+                                        CardActionPill(title: "Copy", systemImage: "doc.on.doc")
+                                    }
+                                    .buttonStyle(.plain)
+                                    .help("Copy")
+                                    Button { onDelete() } label: {
+                                        CardActionPill(title: "Delete", systemImage: "trash")
+                                    }
+                                    .buttonStyle(.plain)
+                                    .help("Delete")
+                                }
+                                .transition(.opacity.combined(with: .move(edge: .trailing)))
+                            }
                         }
                         Spacer()
                     }
-                    .padding(8)
+                    .padding(7)
                 }
-                .clipShape(RoundedRectangle(cornerRadius: 8))
+                .clipShape(RoundedRectangle(cornerRadius: 6))
                 .overlay {
-                    RoundedRectangle(cornerRadius: 8)
-                        .stroke(isSelected ? Color.accentColor : .clear, lineWidth: 3)
+                    RoundedRectangle(cornerRadius: 6)
+                        .stroke(isSelected ? Color.accentColor : .clear, lineWidth: 2)
                 }
             }
-            .aspectRatio(1.55, contentMode: .fit)
+            .aspectRatio(16.0 / 9.0, contentMode: .fit)
             .frame(maxWidth: .infinity)
 
             Text(item.fileName)
                 .font(AppTypography.itemTitle)
                 .lineLimit(1)
+                .truncationMode(.middle)
 
             HStack {
                 Text(item.createdAt, style: .date)
@@ -535,21 +869,445 @@ private struct ScreenshotCard: View {
             .font(AppTypography.metadata)
             .foregroundStyle(.secondary)
         }
-        .padding(10)
+        .padding(8)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(isSelected ? AppTheme.selectedBackground : AppTheme.cardBackground, in: RoundedRectangle(cornerRadius: 8))
+        .background(cardBackground, in: RoundedRectangle(cornerRadius: 7))
         .overlay {
-            RoundedRectangle(cornerRadius: 8)
-                .stroke(isSelected ? Color.accentColor.opacity(0.72) : (isHovering ? AppTheme.border : AppTheme.softBorder), lineWidth: 1)
+            RoundedRectangle(cornerRadius: 7)
+                .stroke(cardBorderColor, lineWidth: isOpeningPreview ? 2 : 1)
         }
-        .contentShape(RoundedRectangle(cornerRadius: 8))
+        .opacity(didAppear ? 1 : 0)
+        .scaleEffect(cardScale, anchor: .topLeading)
+        .offset(y: didAppear ? 0 : 12)
+        .contentShape(RoundedRectangle(cornerRadius: 7))
         .clipped()
+        .onTapGesture(count: 2) {
+            openWithMotion()
+        }
+        .onTapGesture {
+            onSelect()
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(item.fileName)
+        .accessibilityAction {
+            onSelect()
+        }
+        .accessibilityAction(named: "Open Preview") {
+            onOpen()
+        }
+        .focusable()
         .onHover { isHovering = $0 }
-        .task(id: item.url) {
-            thumbnail = await ThumbnailLoader.thumbnail(for: item.url, maxPixelSize: 640)
+        .onAppear {
+            withAnimation(.spring(response: 0.26, dampingFraction: 0.84).delay(0.02)) {
+                didAppear = true
+            }
+        }
+        .task(id: item.id) {
+            let loadedThumbnail = await store.thumbnail(for: item, maxPixelSize: 640)
+            withAnimation(.easeInOut(duration: 0.18)) {
+                thumbnail = loadedThumbnail
+            }
         }
         .animation(.easeInOut(duration: 0.16), value: isSelected)
-        .animation(.easeInOut(duration: 0.12), value: isHovering)
+        .animation(.easeInOut(duration: 0.14), value: isHovering)
+        .animation(.spring(response: 0.18, dampingFraction: 0.82), value: isOpeningPreview)
+    }
+
+    private var cardBackground: Color {
+        if isSelected {
+            return AppTheme.selectedBackground
+        }
+
+        if isHovering {
+            return AppTheme.cardHoverBackground
+        }
+
+        return AppTheme.cardBackground
+    }
+
+    private var cardBorderColor: Color {
+        if isOpeningPreview {
+            return Color.accentColor.opacity(0.92)
+        }
+
+        if isSelected {
+            return Color.accentColor.opacity(0.72)
+        }
+
+        return isHovering ? AppTheme.border : AppTheme.softBorder
+    }
+
+    private var cardScale: CGFloat {
+        if isOpeningPreview {
+            return 0.982
+        }
+
+        return didAppear ? 1 : 0.965
+    }
+
+    private func openWithMotion() {
+        guard !isOpeningPreview else {
+            return
+        }
+
+        onSelect()
+
+        withAnimation(.spring(response: 0.16, dampingFraction: 0.82)) {
+            isOpeningPreview = true
+        }
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) {
+            onOpen()
+
+            withAnimation(.easeOut(duration: 0.14)) {
+                isOpeningPreview = false
+            }
+        }
+    }
+}
+
+private struct ThumbnailPlaceholderView: View {
+    @State private var pulse = false
+
+    var body: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 6)
+                .fill(AppTheme.imageWellBackground)
+
+            VStack(spacing: 7) {
+                Image(systemName: "camera.viewfinder")
+                    .font(.system(size: 24, weight: .semibold))
+                    .foregroundStyle(AppTheme.captureBlue.opacity(pulse ? 0.82 : 0.48))
+
+                RoundedRectangle(cornerRadius: 2)
+                    .fill(AppTheme.assetMuted.opacity(0.28))
+                    .frame(width: 48, height: 4)
+            }
+        }
+        .onAppear {
+            pulse = true
+        }
+        .animation(.easeInOut(duration: 0.22), value: pulse)
+    }
+}
+
+private struct CardActionPill: View {
+    let title: String
+    let systemImage: String
+
+    var body: some View {
+        Label(title, systemImage: systemImage)
+            .font(.system(size: 10, weight: .semibold))
+            .foregroundStyle(.white)
+            .labelStyle(.iconOnly)
+            .frame(width: 24, height: 24)
+            .background(.black.opacity(0.62), in: RoundedRectangle(cornerRadius: 6))
+            .overlay {
+                RoundedRectangle(cornerRadius: 6)
+                    .stroke(.white.opacity(0.16), lineWidth: 1)
+            }
+    }
+}
+
+private struct ScreenshotPreviewOverlayView: View {
+    @ObservedObject var store: ScreenshotStore
+    let item: ScreenshotItem
+    let close: () -> Void
+
+    @State private var image: NSImage?
+    @State private var fitToWindow = true
+    @State private var keyMonitor: Any?
+
+    var body: some View {
+        GeometryReader { proxy in
+            ZStack {
+                Color.black.opacity(0.42)
+                    .ignoresSafeArea()
+                    .onTapGesture(perform: close)
+
+                VStack(spacing: 0) {
+                    HStack(spacing: 10) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(item.fileName)
+                                .font(AppTypography.sectionTitle)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+
+                            Text("\(item.dimensionsText) · \(item.displaySize)")
+                                .font(AppTypography.helper)
+                                .foregroundStyle(.secondary)
+                        }
+
+                        Spacer()
+
+                        Button {
+                            close()
+                            store.openAnnotationEditor(for: item)
+                        } label: {
+                            Label("Edit", systemImage: "slider.horizontal.3")
+                        }
+
+                        Button {
+                            withAnimation(.spring(response: 0.22, dampingFraction: 0.86)) {
+                                fitToWindow.toggle()
+                            }
+                        } label: {
+                            Label(fitToWindow ? "Actual Size" : "Fit", systemImage: fitToWindow ? "plus.magnifyingglass" : "arrow.down.right.and.arrow.up.left")
+                        }
+
+                        Button {
+                            store.copy(item)
+                        } label: {
+                            Label("Copy", systemImage: "doc.on.doc")
+                        }
+
+                        Button {
+                            close()
+                        } label: {
+                            Image(systemName: "xmark")
+                                .frame(width: 24, height: 22)
+                        }
+                        .keyboardShortcut(.cancelAction)
+                        .help("Close")
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .padding(.horizontal, 14)
+                    .frame(height: 52)
+                    .background(AppTheme.toolbarBackground)
+
+                    Divider()
+
+                    ZStack {
+                        AppTheme.contentBackground
+
+                        if let image {
+                            if fitToWindow {
+                                GeometryReader { imageProxy in
+                                    Image(nsImage: image)
+                                        .resizable()
+                                        .interpolation(.high)
+                                        .scaledToFit()
+                                        .frame(width: imageProxy.size.width, height: imageProxy.size.height)
+                                        .contentShape(Rectangle())
+                                        .onTapGesture(count: 2) {
+                                            withAnimation(.spring(response: 0.22, dampingFraction: 0.86)) {
+                                                fitToWindow = false
+                                            }
+                                        }
+                                }
+                                .padding(18)
+                                .transition(.opacity.combined(with: .scale(scale: 0.992)))
+                            } else {
+                                ScrollView([.horizontal, .vertical]) {
+                                    Image(nsImage: image)
+                                        .resizable()
+                                        .interpolation(.high)
+                                        .frame(width: actualPreviewSize.width, height: actualPreviewSize.height)
+                                        .padding(22)
+                                        .contentShape(Rectangle())
+                                        .onTapGesture(count: 2) {
+                                            withAnimation(.spring(response: 0.22, dampingFraction: 0.86)) {
+                                                fitToWindow = true
+                                            }
+                                        }
+                                }
+                                .transition(.opacity.combined(with: .scale(scale: 0.992)))
+                            }
+                        } else {
+                            ProgressView()
+                                .controlSize(.large)
+                        }
+                    }
+                }
+                .frame(width: panelSize(for: proxy.size).width, height: panelSize(for: proxy.size).height)
+                .background(AppTheme.panelBackground, in: RoundedRectangle(cornerRadius: 8))
+                .clipShape(RoundedRectangle(cornerRadius: 8))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 8)
+                        .stroke(AppTheme.border, lineWidth: 1)
+                }
+                .shadow(color: .black.opacity(0.22), radius: 8, y: 4)
+            }
+        }
+        .task(id: item.id) {
+            image = nil
+            let loadedImage = await store.loadImage(for: item)
+            withAnimation(.easeOut(duration: 0.14)) {
+                image = loadedImage
+            }
+        }
+        .onAppear(perform: installKeyMonitor)
+        .onDisappear(perform: removeKeyMonitor)
+    }
+
+    private func panelSize(for available: CGSize) -> CGSize {
+        CGSize(
+            width: min(max(available.width - 96, 680), 1180),
+            height: min(max(available.height - 96, 460), 780)
+        )
+    }
+
+    private var actualPreviewSize: CGSize {
+        guard item.pixelWidth > 0, item.pixelHeight > 0 else {
+            return CGSize(width: max(image?.size.width ?? 1, 1), height: max(image?.size.height ?? 1, 1))
+        }
+
+        let scale = NSScreen.main?.backingScaleFactor ?? 2
+        return CGSize(
+            width: max(CGFloat(item.pixelWidth) / scale, 1),
+            height: max(CGFloat(item.pixelHeight) / scale, 1)
+        )
+    }
+
+    private func installKeyMonitor() {
+        removeKeyMonitor()
+
+        keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+            guard event.keyCode == 53 else {
+                return event
+            }
+
+            close()
+            return nil
+        }
+    }
+
+    private func removeKeyMonitor() {
+        guard let keyMonitor else {
+            return
+        }
+
+        NSEvent.removeMonitor(keyMonitor)
+        self.keyMonitor = nil
+    }
+}
+
+struct ScreenshotPreviewWindowView: View {
+	    @ObservedObject var store: ScreenshotStore
+	    let item: ScreenshotItem
+	    @State private var image: NSImage?
+	    @State private var fitToWindow = true
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 10) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(item.fileName)
+                        .font(AppTypography.sectionTitle)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+
+                    Text("\(item.dimensionsText) · \(item.displaySize)")
+                        .font(AppTypography.helper)
+                        .foregroundStyle(.secondary)
+                }
+
+                Spacer()
+
+                Button {
+                    store.openAnnotationEditor(for: item)
+                } label: {
+                    Label("Edit", systemImage: "slider.horizontal.3")
+                }
+
+                Button {
+                    withAnimation(.spring(response: 0.24, dampingFraction: 0.86)) {
+                        fitToWindow.toggle()
+                    }
+                } label: {
+                    Label(fitToWindow ? "Actual Size" : "Fit", systemImage: fitToWindow ? "plus.magnifyingglass" : "arrow.down.right.and.arrow.up.left")
+                }
+
+                Button {
+                    store.copy(item)
+                } label: {
+                    Label("Copy", systemImage: "doc.on.doc")
+                }
+
+                if !item.isTemporary {
+                    Button {
+                        store.revealInFinder(item)
+                    } label: {
+                        Label("Finder", systemImage: "folder")
+                    }
+
+                    Button {
+                        store.open(item)
+                    } label: {
+                        Label("Preview", systemImage: "arrow.up.right.square")
+                    }
+                }
+            }
+            .buttonStyle(.bordered)
+            .padding(.horizontal, 16)
+            .frame(height: 56)
+            .background(AppTheme.toolbarBackground)
+
+            Divider()
+
+            ZStack {
+                AppTheme.contentBackground
+                    .ignoresSafeArea()
+
+	                if let image {
+	                    if fitToWindow {
+	                        GeometryReader { proxy in
+	                            Image(nsImage: image)
+                                .resizable()
+                                .interpolation(.high)
+                                .scaledToFit()
+                                .frame(width: proxy.size.width, height: proxy.size.height)
+                                .contentShape(Rectangle())
+                                .onTapGesture(count: 2) {
+                                    withAnimation(.spring(response: 0.24, dampingFraction: 0.86)) {
+                                        fitToWindow = false
+                                    }
+	                                }
+	                        }
+	                        .padding(18)
+	                        .transition(.opacity.combined(with: .scale(scale: 0.992)))
+	                    } else {
+	                        ScrollView([.horizontal, .vertical]) {
+	                            Image(nsImage: image)
+                                .resizable()
+                                .interpolation(.high)
+                                .frame(width: actualPreviewSize.width, height: actualPreviewSize.height)
+                                .padding(24)
+                                .contentShape(Rectangle())
+                                .onTapGesture(count: 2) {
+                                    withAnimation(.spring(response: 0.24, dampingFraction: 0.86)) {
+                                        fitToWindow = true
+                                    }
+	                                }
+	                        }
+	                        .transition(.opacity.combined(with: .scale(scale: 0.992)))
+	                    }
+	                } else {
+	                    ProgressView()
+                        .controlSize(.large)
+                }
+            }
+        }
+	        .frame(minWidth: 900, minHeight: 620)
+	        .task(id: item.id) {
+	            let loadedImage = await store.loadImage(for: item)
+	            withAnimation(.easeOut(duration: 0.16)) {
+	                image = loadedImage
+	            }
+	        }
+    }
+
+    private var actualPreviewSize: CGSize {
+        guard item.pixelWidth > 0, item.pixelHeight > 0 else {
+            return CGSize(width: max(image?.size.width ?? 1, 1), height: max(image?.size.height ?? 1, 1))
+        }
+
+        let scale = NSScreen.main?.backingScaleFactor ?? 2
+        return CGSize(
+            width: max(CGFloat(item.pixelWidth) / scale, 1),
+            height: max(CGFloat(item.pixelHeight) / scale, 1)
+        )
     }
 }
 
@@ -560,21 +1318,17 @@ private struct CaptureKindBadge: View {
         Image(systemName: kind.systemImage)
             .font(.system(size: 11, weight: .semibold))
             .foregroundStyle(.white)
-            .frame(width: 22, height: 22)
-            .background(badgeColor, in: RoundedRectangle(cornerRadius: 6))
-            .overlay {
-                RoundedRectangle(cornerRadius: 6)
-                    .stroke(Color.white.opacity(0.18), lineWidth: 1)
-            }
+            .frame(width: 21, height: 21)
+            .background(badgeColor, in: RoundedRectangle(cornerRadius: 5))
             .help(kind.displayName)
     }
 
     private var badgeColor: Color {
         switch kind {
         case .clipboard:
-            return .accentColor
+            return AppTheme.libraryAmber
         case .saved:
-            return .green
+            return AppTheme.successGreen
         }
     }
 }
@@ -583,6 +1337,7 @@ private struct PreviewPane: View {
     @ObservedObject var store: ScreenshotStore
     @Binding var pendingDelete: ScreenshotItem?
     @Binding var editingItem: ScreenshotItem?
+    @Binding var previewItem: ScreenshotItem?
 
     var body: some View {
         ZStack {
@@ -595,26 +1350,28 @@ private struct PreviewPane: View {
                             .font(AppTypography.paneTitle)
 
                         ZStack {
-                            RoundedRectangle(cornerRadius: 8)
+                            RoundedRectangle(cornerRadius: 7)
                                 .fill(AppTheme.imageWellBackground)
 
-                            if let image = NSImage(contentsOf: item.url) {
-                                Image(nsImage: image)
-                                    .resizable()
-                                    .scaledToFit()
-                                    .clipShape(RoundedRectangle(cornerRadius: 8))
-                                    .padding(8)
-                            } else {
-                                Image(systemName: "photo")
-                                    .font(.system(size: 42))
-                                    .foregroundStyle(.secondary)
-                            }
+                            AsyncPreviewImageView(store: store, item: item)
+                                .clipShape(RoundedRectangle(cornerRadius: 6))
+                                .padding(8)
                         }
                         .frame(maxWidth: .infinity)
                         .aspectRatio(1.2, contentMode: .fit)
                         .overlay {
-                            RoundedRectangle(cornerRadius: 8)
+                            RoundedRectangle(cornerRadius: 7)
                                 .stroke(AppTheme.softBorder, lineWidth: 1)
+                        }
+                        .contentShape(RoundedRectangle(cornerRadius: 7))
+                        .onTapGesture(count: 2) {
+                            previewItem = item
+                        }
+                        .contextMenu {
+                            Button("Open Large Preview") { previewItem = item }
+                            if !item.isTemporary {
+                                Button("Open in Preview") { store.open(item) }
+                            }
                         }
 
                         VStack(alignment: .leading, spacing: 8) {
@@ -625,56 +1382,66 @@ private struct PreviewPane: View {
                             MetadataRow(title: "File size", value: item.displaySize)
                         }
 
-                        HStack {
-                            Button {
-                                editingItem = item
-                            } label: {
-                                Label("Edit", systemImage: "slider.horizontal.3")
+                        VStack(spacing: 8) {
+                            HStack(spacing: 8) {
+                                Button {
+                                    store.openAnnotationEditor(for: item)
+                                } label: {
+                                    Label("Edit", systemImage: "slider.horizontal.3")
+                                        .frame(maxWidth: .infinity)
+                                }
+
+                                Button {
+                                    previewItem = item
+                                } label: {
+                                    Label("Large View", systemImage: "arrow.up.left.and.arrow.down.right")
+                                        .frame(maxWidth: .infinity)
+                                }
                             }
 
-                            Button {
-                                store.open(item)
+                            HStack(spacing: 8) {
+                                Button {
+                                    store.copy(item)
+                                } label: {
+                                    Label("Copy", systemImage: "doc.on.doc")
+                                        .frame(maxWidth: .infinity)
+                                }
+
+                                if !item.isTemporary {
+                                    Button {
+                                        store.revealInFinder(item)
+                                    } label: {
+                                        Label("Finder", systemImage: "folder")
+                                            .frame(maxWidth: .infinity)
+                                    }
+                                }
+                            }
+
+                            Button(role: .destructive) {
+                                pendingDelete = item
                             } label: {
-                                Label("Open", systemImage: "arrow.up.right.square")
+                                Label("Delete", systemImage: "trash")
+                                    .frame(maxWidth: .infinity)
                             }
                         }
-
-                        HStack {
-                            Button {
-                                store.copy(item)
-                            } label: {
-                                Label("Copy", systemImage: "doc.on.doc")
-                            }
-
-                            Button {
-                                store.revealInFinder(item)
-                            } label: {
-                                Label("Finder", systemImage: "folder")
-                            }
-                        }
-
-                        Button(role: .destructive) {
-                            pendingDelete = item
-                        } label: {
-                            Label("Delete", systemImage: "trash")
-                        }
+                        .buttonStyle(.bordered)
                     }
-                    .padding(20)
+                    .padding(18)
                 }
                 .transition(.opacity)
             } else {
-                VStack(spacing: 12) {
+                VStack(spacing: 10) {
                     Image(systemName: "photo.on.rectangle.angled")
-                        .font(.system(size: 42))
+                        .font(.system(size: 34))
                         .foregroundStyle(.secondary)
 
                     Text("Select a screenshot")
-                        .font(.headline)
+                        .font(AppTypography.sectionTitle)
                         .foregroundStyle(.secondary)
                 }
             }
         }
-        .animation(.easeInOut(duration: 0.18), value: store.selectedItem?.id)
+        .animation(.easeInOut(duration: 0.16), value: store.selectedItem?.id)
     }
 }
 
@@ -706,7 +1473,7 @@ private struct CaptureNoticeView: View {
                 Text(notice.detail)
                     .font(AppTypography.helper)
                     .foregroundStyle(.secondary)
-                    .lineLimit(1)
+                    .lineLimit(2)
             }
         }
         .padding(.horizontal, 14)
@@ -716,7 +1483,262 @@ private struct CaptureNoticeView: View {
             RoundedRectangle(cornerRadius: 8)
                 .stroke(AppTheme.border, lineWidth: 1)
         }
-        .frame(maxWidth: 360)
+        .frame(maxWidth: 440)
+    }
+}
+
+private struct OnboardingOverlayView: View {
+    let clipboardHotkey: String
+    let saveHotkey: String
+    let dismiss: () -> Void
+
+    @State private var selectedStep = 0
+    @State private var didAppear = false
+    @State private var pulse = false
+
+    private var steps: [OnboardingStep] {
+        [
+            OnboardingStep(
+                icon: "doc.on.clipboard",
+                tint: AppTheme.libraryAmber,
+                title: "Choose the result",
+                body: "Use Clipboard for a temporary copied image. Use Library when you want a file plus clipboard copy.",
+                action: "\(clipboardHotkey) copies and keeps it in memory"
+            ),
+            OnboardingStep(
+                icon: "crop",
+                tint: AppTheme.captureBlue,
+                title: "Select an area or window",
+                body: "Drag a rectangle, or click a window. Return confirms the current selection; Escape cancels.",
+                action: "The overlay shows XY and color while you move"
+            ),
+            OnboardingStep(
+                icon: "checkmark.circle",
+                tint: AppTheme.successGreen,
+                title: "Finish in the editor",
+                body: "Press Enter to finish. Clipboard stays in memory; Library writes a file and also copies it.",
+                action: "\(saveHotkey) saves to Library"
+            ),
+            OnboardingStep(
+                icon: "photo.stack",
+                tint: AppTheme.settingsViolet,
+                title: "Open it later",
+                body: "Copied captures still appear in Library. Double-click a card for the large preview window.",
+                action: "The Guide button opens this anytime"
+            )
+        ]
+    }
+
+    private var currentStep: OnboardingStep {
+        steps[selectedStep]
+    }
+
+    var body: some View {
+        ZStack {
+            Color.black.opacity(0.32)
+                .ignoresSafeArea()
+
+            VStack(alignment: .leading, spacing: 0) {
+                HStack(spacing: 10) {
+                    Image(systemName: "questionmark.circle")
+                        .font(.system(size: 17, weight: .semibold))
+                        .foregroundStyle(AppTheme.captureBlue)
+                        .frame(width: 24)
+
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Quick Guide")
+                            .font(AppTypography.productTitle)
+
+                        Text("The capture flow in four steps")
+                            .font(AppTypography.helper)
+                            .foregroundStyle(.secondary)
+                    }
+
+                    Spacer()
+
+                    Button(action: dismiss) {
+                        Image(systemName: "xmark")
+                            .frame(width: 24, height: 24)
+                    }
+                    .buttonStyle(.plain)
+                    .help("Close Guide")
+                }
+                .padding(16)
+
+                Divider()
+
+                HStack(spacing: 0) {
+                    VStack(alignment: .leading, spacing: 6) {
+                        ForEach(steps.indices, id: \.self) { index in
+                            OnboardingStepRow(
+                                step: steps[index],
+                                isSelected: index == selectedStep
+                            ) {
+                                withAnimation(.spring(response: 0.26, dampingFraction: 0.86)) {
+                                    selectedStep = index
+                                }
+                            }
+                        }
+                    }
+                    .frame(width: 190)
+                    .padding(12)
+
+                    Divider()
+
+                    VStack(alignment: .leading, spacing: 14) {
+                        OnboardingMotionPreview(step: currentStep, pulse: pulse)
+                            .frame(height: 138)
+                            .frame(maxWidth: .infinity)
+                            .id(selectedStep)
+                            .transition(.opacity.combined(with: .scale(scale: 0.98)))
+
+                        VStack(alignment: .leading, spacing: 7) {
+                            Text(currentStep.title)
+                                .font(AppTypography.paneTitle)
+
+                            Text(currentStep.body)
+                                .font(AppTypography.itemTitle)
+                                .foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+
+                            Label(currentStep.action, systemImage: "info.circle")
+                                .font(AppTypography.helper)
+                                .foregroundStyle(currentStep.tint)
+                                .padding(.top, 2)
+                        }
+                        .contentTransition(.opacity)
+
+                        Spacer(minLength: 4)
+
+                        HStack(spacing: 8) {
+                            ForEach(steps.indices, id: \.self) { index in
+                                Capsule()
+                                    .fill(index == selectedStep ? currentStep.tint : AppTheme.softBorder)
+                                    .frame(width: index == selectedStep ? 22 : 7, height: 7)
+                                    .animation(.spring(response: 0.24, dampingFraction: 0.86), value: selectedStep)
+                            }
+
+                            Spacer()
+
+                            Button("Skip") {
+                                dismiss()
+                            }
+
+                            Button {
+                                if selectedStep == steps.count - 1 {
+                                    dismiss()
+                                } else {
+                                    withAnimation(.spring(response: 0.26, dampingFraction: 0.86)) {
+                                        selectedStep += 1
+                                    }
+                                }
+                            } label: {
+                                Label(selectedStep == steps.count - 1 ? "Done" : "Next", systemImage: selectedStep == steps.count - 1 ? "checkmark" : "arrow.right")
+                            }
+                            .buttonStyle(.borderedProminent)
+                        }
+                        .buttonStyle(.bordered)
+                    }
+                    .padding(18)
+                    .frame(width: 390)
+                }
+            }
+            .frame(width: 604, height: 414)
+            .background(AppTheme.panelBackground, in: RoundedRectangle(cornerRadius: 10))
+            .overlay {
+                RoundedRectangle(cornerRadius: 10)
+                    .stroke(AppTheme.border, lineWidth: 1)
+            }
+            .shadow(color: .black.opacity(0.22), radius: 18, x: 0, y: 10)
+            .scaleEffect(didAppear ? 1 : 0.97)
+            .opacity(didAppear ? 1 : 0)
+        }
+        .onAppear {
+            withAnimation(.spring(response: 0.32, dampingFraction: 0.86)) {
+                didAppear = true
+            }
+
+            pulse = true
+        }
+        .animation(.easeInOut(duration: 0.24), value: pulse)
+    }
+}
+
+private struct OnboardingStep: Identifiable {
+    let id = UUID()
+    let icon: String
+    let tint: Color
+    let title: String
+    let body: String
+    let action: String
+}
+
+private struct OnboardingStepRow: View {
+    let step: OnboardingStep
+    let isSelected: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 9) {
+                Image(systemName: step.icon)
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(isSelected ? .white : step.tint)
+                    .frame(width: 18)
+
+                Text(step.title)
+                    .font(AppTypography.itemTitle)
+                    .foregroundStyle(isSelected ? .white : .primary)
+                    .lineLimit(1)
+
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 10)
+            .frame(height: 34)
+            .background(isSelected ? step.tint : Color.clear, in: RoundedRectangle(cornerRadius: 8))
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+private struct OnboardingMotionPreview: View {
+    let step: OnboardingStep
+    let pulse: Bool
+
+    var body: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 8)
+                .fill(AppTheme.imageWellBackground)
+
+            RoundedRectangle(cornerRadius: 7)
+                .stroke(AppTheme.softBorder, lineWidth: 1)
+
+            HStack(spacing: 12) {
+                Image(systemName: step.icon)
+                    .font(.system(size: 28, weight: .semibold))
+                    .foregroundStyle(step.tint)
+                    .frame(width: 52, height: 52)
+                    .background(step.tint.opacity(0.14), in: RoundedRectangle(cornerRadius: 9))
+                    .scaleEffect(pulse ? 1.04 : 0.98)
+
+                VStack(alignment: .leading, spacing: 8) {
+                    RoundedRectangle(cornerRadius: 3)
+                        .fill(AppTheme.assetMuted.opacity(0.45))
+                        .frame(width: 168, height: 8)
+
+                    RoundedRectangle(cornerRadius: 3)
+                        .fill(step.tint.opacity(0.72))
+                        .frame(width: pulse ? 132 : 96, height: 8)
+
+                    RoundedRectangle(cornerRadius: 3)
+                        .fill(AppTheme.assetMuted.opacity(0.3))
+                        .frame(width: 118, height: 8)
+                }
+
+                Spacer(minLength: 0)
+            }
+            .padding(18)
+        }
     }
 }
 
@@ -725,57 +1747,90 @@ private struct MetadataRow: View {
     let value: String
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 3) {
+        HStack(alignment: .firstTextBaseline, spacing: 10) {
             Text(title)
                 .font(AppTypography.helper)
                 .foregroundStyle(.secondary)
+                .frame(width: 72, alignment: .leading)
+
             Text(value)
                 .font(AppTypography.itemTitle)
                 .lineLimit(2)
+                .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 }
 
 private struct EmptyStateView: View {
-    let isLoading: Bool
+    @ObservedObject var store: ScreenshotStore
+    @State private var didAppear = false
 
     var body: some View {
-        VStack(spacing: 14) {
-            if isLoading {
+        VStack(spacing: 12) {
+            if store.isLoading {
                 ProgressView()
                     .controlSize(.large)
             } else {
-                Image(systemName: "photo.stack")
-                    .font(.system(size: 48))
-                    .foregroundStyle(.secondary)
-
                 Text("No screenshots found")
-                    .font(.title3.weight(.semibold))
+                    .font(AppTypography.sectionTitle)
+                    .opacity(didAppear ? 1 : 0)
 
-                Text("Choose a folder with PNG, JPG, HEIC, TIFF, or WebP images.")
+                Text("Choose a folder, capture, or drag images here.")
+                    .font(AppTypography.itemTitle)
                     .foregroundStyle(.secondary)
+                    .opacity(didAppear ? 1 : 0)
+
+                HStack(spacing: 8) {
+                    Button {
+                        store.chooseFolder()
+                    } label: {
+                        Label("Choose Folder", systemImage: "folder")
+                    }
+
+                    Button {
+                        store.captureToClipboard()
+                    } label: {
+                        Label("Capture", systemImage: "camera.viewfinder")
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(store.isCapturing)
+                }
+                .buttonStyle(.bordered)
+                .padding(.top, 4)
+                .opacity(didAppear ? 1 : 0)
+                .offset(y: didAppear ? 0 : 6)
             }
         }
+        .frame(maxWidth: 360)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .padding(24)
+        .onAppear {
+            withAnimation(.spring(response: 0.38, dampingFraction: 0.86)) {
+                didAppear = true
+            }
+        }
     }
 }
 
-private enum ThumbnailLoader {
-    static func thumbnail(for url: URL, maxPixelSize: Int) async -> NSImage? {
-        await Task.detached(priority: .utility) {
-            let options: [CFString: Any] = [
-                kCGImageSourceShouldCache: false,
-                kCGImageSourceCreateThumbnailFromImageAlways: true,
-                kCGImageSourceThumbnailMaxPixelSize: maxPixelSize,
-                kCGImageSourceCreateThumbnailWithTransform: true
-            ]
+private struct AsyncPreviewImageView: View {
+    @ObservedObject var store: ScreenshotStore
+    let item: ScreenshotItem
+    @State private var image: NSImage?
 
-            guard let source = CGImageSourceCreateWithURL(url as CFURL, nil),
-                  let image = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else {
-                return nil
+    var body: some View {
+        Group {
+            if let image {
+                Image(nsImage: image)
+                    .resizable()
+                    .scaledToFit()
+                    .transition(.opacity)
+            } else {
+                ProgressView()
+                    .controlSize(.small)
             }
-
-            return NSImage(cgImage: image, size: NSSize(width: image.width, height: image.height))
-        }.value
+        }
+        .task(id: item.id) {
+            image = await store.loadImage(for: item)
+        }
     }
 }

@@ -8,6 +8,7 @@ final class ScreenCaptureOverlayController {
 
     private var windows: [ScreenCaptureOverlayWindow] = []
     private var completion: ((Result<NSImage, Error>) -> Void)?
+    private var keyMonitor: Any?
 
     private init() {}
 
@@ -15,12 +16,19 @@ final class ScreenCaptureOverlayController {
         CGPreflightScreenCaptureAccess()
     }
 
+    @discardableResult
+    static func requestScreenCaptureAccess() -> Bool {
+        CGRequestScreenCaptureAccess()
+    }
+
     func start(completion: @escaping (Result<NSImage, Error>) -> Void) {
         cancel()
 
         self.completion = completion
+        installKeyMonitor()
         let windowTargets = Self.captureWindowTargets()
         windows = NSScreen.screens.map { screen in
+            let frozenSnapshot = Self.frozenSnapshot(for: screen)
             let window = ScreenCaptureOverlayWindow(
                 contentRect: screen.frame,
                 styleMask: [.borderless],
@@ -31,6 +39,8 @@ final class ScreenCaptureOverlayController {
 
             let overlayView = ScreenCaptureOverlayView(frame: NSRect(origin: .zero, size: screen.frame.size))
             overlayView.windowTargets = windowTargets
+            overlayView.frozenSnapshot = frozenSnapshot
+            overlayView.pixelSampler = frozenSnapshot?.pixelSampler
             overlayView.onComplete = { [weak self, weak window] localRect in
                 guard let window else {
                     self?.finish(.failure(ScreenCaptureOverlayError.captureFailed))
@@ -47,18 +57,25 @@ final class ScreenCaptureOverlayController {
             return window
         }
 
+        NSApp.activate(ignoringOtherApps: true)
         windows.forEach { window in
             window.makeKeyAndOrderFront(nil)
+            window.makeFirstResponder(window.contentView)
         }
     }
 
     func cancel() {
+        removeKeyMonitor()
         windows.forEach { $0.orderOut(nil) }
         windows = []
         completion = nil
     }
 
     private func capture(localRect: NSRect, in window: NSWindow) {
+        let frozenImage = (window.contentView as? ScreenCaptureOverlayView)?
+            .frozenSnapshot?
+            .croppedImage(localRect: localRect)
+        let targetScreen = window.screen
         let globalRect = NSRect(
             x: window.frame.minX + localRect.minX,
             y: window.frame.minY + localRect.minY,
@@ -69,13 +86,18 @@ final class ScreenCaptureOverlayController {
         windows.forEach { $0.orderOut(nil) }
         windows = []
 
+        if let frozenImage {
+            finish(.success(frozenImage))
+            return
+        }
+
         Task { @MainActor in
             try? await Task.sleep(nanoseconds: 90_000_000)
 
             do {
                 let image = try await Self.captureImage(
                     localRect: localRect,
-                    screen: window.screen,
+                    screen: targetScreen,
                     fallbackGlobalRect: globalRect
                 )
                 finish(.success(image))
@@ -86,12 +108,37 @@ final class ScreenCaptureOverlayController {
     }
 
     private func finish(_ result: Result<NSImage, Error>) {
+        removeKeyMonitor()
         windows.forEach { $0.orderOut(nil) }
         windows = []
 
         let completion = completion
         self.completion = nil
         completion?(result)
+    }
+
+    private func installKeyMonitor() {
+        removeKeyMonitor()
+
+        keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            guard let self,
+                  self.completion != nil,
+                  event.keyCode == 53 else {
+                return event
+            }
+
+            self.finish(.failure(CancellationError()))
+            return nil
+        }
+    }
+
+    private func removeKeyMonitor() {
+        guard let keyMonitor else {
+            return
+        }
+
+        NSEvent.removeMonitor(keyMonitor)
+        self.keyMonitor = nil
     }
 
     private static func coreGraphicsRect(from rect: NSRect) -> CGRect {
@@ -108,11 +155,62 @@ final class ScreenCaptureOverlayController {
     }
 
     private static func captureImage(localRect: NSRect, screen: NSScreen?, fallbackGlobalRect: NSRect) async throws -> NSImage {
-        if #available(macOS 14.0, *), let screen {
-            return try await screenCaptureKitImage(localRect: localRect, screen: screen)
+        guard hasScreenCaptureAccess else {
+            throw ScreenCaptureOverlayError.screenRecordingPermissionRequired
         }
 
-        let globalRect = fallbackGlobalRect
+        if #available(macOS 14.0, *), let screen {
+            do {
+                return try await screenCaptureKitImage(localRect: localRect, screen: screen)
+            } catch {
+                guard hasScreenCaptureAccess else {
+                    throw ScreenCaptureOverlayError.screenRecordingPermissionRequired
+                }
+
+                return try coreGraphicsImage(globalRect: fallbackGlobalRect)
+            }
+        }
+
+        return try coreGraphicsImage(globalRect: fallbackGlobalRect)
+    }
+
+    private static func frozenSnapshot(for screen: NSScreen) -> FrozenScreenSnapshot? {
+        if let displayID = displayID(for: screen),
+           let cgImage = CGDisplayCreateImage(displayID) {
+            return FrozenScreenSnapshot(
+                cgImage: cgImage,
+                screenSize: screen.frame.size,
+                pixelSampler: ScreenPixelSampler(cgImage: cgImage)
+            )
+        }
+
+        let captureRect = coreGraphicsRect(from: screen.frame)
+
+        guard let cgImage = CGWindowListCreateImage(
+            captureRect,
+            .optionOnScreenOnly,
+            kCGNullWindowID,
+            [.bestResolution, .boundsIgnoreFraming]
+        ) else {
+            return nil
+        }
+
+        return FrozenScreenSnapshot(
+            cgImage: cgImage,
+            screenSize: screen.frame.size,
+            pixelSampler: ScreenPixelSampler(cgImage: cgImage)
+        )
+    }
+
+    private static func displayID(for screen: NSScreen) -> CGDirectDisplayID? {
+        guard let screenNumber = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber else {
+            return nil
+        }
+
+        return CGDirectDisplayID(screenNumber.uint32Value)
+    }
+
+    private static func coreGraphicsImage(globalRect: NSRect) throws -> NSImage {
         let captureRect = coreGraphicsRect(from: globalRect)
 
         guard let cgImage = CGWindowListCreateImage(
@@ -130,8 +228,7 @@ final class ScreenCaptureOverlayController {
     @available(macOS 14.0, *)
     private static func screenCaptureKitImage(localRect: NSRect, screen: NSScreen) async throws -> NSImage {
         let content = try await SCShareableContent.current
-        let screenDisplayID = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber
-        let displayID = screenDisplayID.map { CGDirectDisplayID($0.uint32Value) }
+        let displayID = displayID(for: screen)
         let displayForScreen = displayID.flatMap { id in
             content.displays.first { $0.displayID == id }
         }
@@ -140,46 +237,33 @@ final class ScreenCaptureOverlayController {
             throw ScreenCaptureOverlayError.captureFailed
         }
 
-        let filter = SCContentFilter(display: display, excludingWindows: [])
+        let currentPID = ProcessInfo.processInfo.processIdentifier
+        let currentAppWindows = content.windows.filter { window in
+            window.owningApplication?.processID == currentPID
+        }
+        let filter = SCContentFilter(display: display, excludingWindows: currentAppWindows)
         if #available(macOS 14.2, *) {
             filter.includeMenuBar = true
         }
 
         let scale = screen.backingScaleFactor
-        let fullWidth = max(1, Int(round(screen.frame.width * scale)))
-        let fullHeight = max(1, Int(round(screen.frame.height * scale)))
+        let sourceRect = CGRect(
+            x: localRect.minX,
+            y: screen.frame.height - localRect.maxY,
+            width: localRect.width,
+            height: localRect.height
+        ).integral
+        let outputWidth = max(1, Int(round(sourceRect.width * scale)))
+        let outputHeight = max(1, Int(round(sourceRect.height * scale)))
         let configuration = SCStreamConfiguration()
-        configuration.width = fullWidth
-        configuration.height = fullHeight
+        configuration.sourceRect = sourceRect
+        configuration.width = outputWidth
+        configuration.height = outputHeight
         configuration.scalesToFit = false
         configuration.showsCursor = false
 
-        let displayImage = try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: configuration)
-        let cropRect = pixelCropRect(localRect: localRect, scale: scale, imageSize: CGSize(width: displayImage.width, height: displayImage.height), screenSize: screen.frame.size)
-
-        guard let croppedImage = displayImage.cropping(to: cropRect) else {
-            throw ScreenCaptureOverlayError.captureFailed
-        }
-
-        return NSImage(cgImage: croppedImage, size: localRect.size)
-    }
-
-    private static func pixelCropRect(localRect: NSRect, scale: CGFloat, imageSize: CGSize, screenSize: CGSize) -> CGRect {
-        let rect = CGRect(
-            x: localRect.minX * scale,
-            y: (screenSize.height - localRect.maxY) * scale,
-            width: localRect.width * scale,
-            height: localRect.height * scale
-        ).integral
-
-        let bounds = CGRect(origin: .zero, size: imageSize)
-        let clipped = rect.intersection(bounds)
-
-        if clipped.isNull || clipped.width < 1 || clipped.height < 1 {
-            return bounds
-        }
-
-        return clipped
+        let image = try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: configuration)
+        return NSImage(cgImage: image, size: localRect.size)
     }
 
     private static func captureWindowTargets() -> [CaptureWindowTarget] {
@@ -241,8 +325,158 @@ fileprivate struct CaptureWindowTarget {
     let title: String?
 }
 
+fileprivate struct FrozenScreenSnapshot {
+    let cgImage: CGImage
+    let image: NSImage
+    let screenSize: NSSize
+    let pixelSampler: ScreenPixelSampler?
+
+    init(cgImage: CGImage, screenSize: NSSize, pixelSampler: ScreenPixelSampler?) {
+        self.cgImage = cgImage
+        self.image = NSImage(cgImage: cgImage, size: screenSize)
+        self.screenSize = screenSize
+        self.pixelSampler = pixelSampler
+    }
+
+    func croppedImage(localRect: NSRect) -> NSImage? {
+        guard screenSize.width > 0, screenSize.height > 0 else {
+            return nil
+        }
+
+        let scaleX = CGFloat(cgImage.width) / screenSize.width
+        let scaleY = CGFloat(cgImage.height) / screenSize.height
+        let pixelRect = CGRect(
+            x: localRect.minX * scaleX,
+            y: (screenSize.height - localRect.maxY) * scaleY,
+            width: localRect.width * scaleX,
+            height: localRect.height * scaleY
+        ).integral
+        let imageBounds = CGRect(
+            x: 0,
+            y: 0,
+            width: CGFloat(cgImage.width),
+            height: CGFloat(cgImage.height)
+        )
+        let boundedRect = pixelRect.intersection(imageBounds)
+
+        guard !boundedRect.isNull,
+              !boundedRect.isEmpty,
+              let cropped = cgImage.cropping(to: boundedRect) else {
+            return nil
+        }
+
+        return NSImage(cgImage: cropped, size: localRect.size)
+    }
+}
+
+fileprivate struct PixelSample {
+    let x: Int
+    let y: Int
+    let red: UInt8
+    let green: UInt8
+    let blue: UInt8
+
+    var hexString: String {
+        String(format: "#%02X%02X%02X", red, green, blue)
+    }
+
+    var rgbString: String {
+        "RGB \(red) \(green) \(blue)"
+    }
+
+    var color: NSColor {
+        NSColor(
+            calibratedRed: CGFloat(red) / 255,
+            green: CGFloat(green) / 255,
+            blue: CGFloat(blue) / 255,
+            alpha: 1
+        )
+    }
+}
+
+fileprivate final class ScreenPixelSampler {
+    private let pixels: [UInt8]
+    private let width: Int
+    private let height: Int
+    private let bytesPerRow: Int
+
+    init?(cgImage: CGImage) {
+        let imageWidth = cgImage.width
+        let imageHeight = cgImage.height
+        let imageBytesPerRow = max(imageWidth * 4, 4)
+
+        guard imageWidth > 0, imageHeight > 0 else {
+            return nil
+        }
+
+        var normalizedPixels = [UInt8](repeating: 0, count: imageHeight * imageBytesPerRow)
+        let colorSpace = CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB()
+        let bitmapInfo = CGImageAlphaInfo.premultipliedLast.rawValue
+            | CGBitmapInfo.byteOrder32Big.rawValue
+
+        let didDraw = normalizedPixels.withUnsafeMutableBytes { buffer in
+            guard let context = CGContext(
+                data: buffer.baseAddress,
+                width: imageWidth,
+                height: imageHeight,
+                bitsPerComponent: 8,
+                bytesPerRow: imageBytesPerRow,
+                space: colorSpace,
+                bitmapInfo: bitmapInfo
+            ) else {
+                return false
+            }
+
+            context.interpolationQuality = .none
+            context.draw(cgImage, in: CGRect(x: 0, y: 0, width: imageWidth, height: imageHeight))
+            return true
+        }
+
+        guard didDraw else {
+            return nil
+        }
+
+        width = imageWidth
+        height = imageHeight
+        bytesPerRow = imageBytesPerRow
+        pixels = normalizedPixels
+    }
+
+    func sample(at localPoint: NSPoint, in bounds: NSRect) -> PixelSample? {
+        guard bounds.width > 0, bounds.height > 0 else {
+            return nil
+        }
+
+        let scaleX = CGFloat(width) / bounds.width
+        let scaleY = CGFloat(height) / bounds.height
+        let pixelX = clamp(Int(floor(localPoint.x * scaleX)), lower: 0, upper: width - 1)
+        let pixelY = clamp(Int(floor((bounds.height - localPoint.y) * scaleY)), lower: 0, upper: height - 1)
+        let offset = pixelY * bytesPerRow + pixelX * 4
+
+        guard offset + 2 < pixels.count else {
+            return nil
+        }
+
+        return PixelSample(
+            x: pixelX,
+            y: pixelY,
+            red: pixels[offset],
+            green: pixels[offset + 1],
+            blue: pixels[offset + 2]
+        )
+    }
+
+    private func clamp(_ value: Int, lower: Int, upper: Int) -> Int {
+        min(max(value, lower), upper)
+    }
+}
+
 final class ScreenCaptureOverlayWindow: NSWindow {
     override var canBecomeKey: Bool {
+        true
+    }
+
+    override var canBecomeMain: Bool {
         true
     }
 
@@ -275,6 +509,7 @@ final class ScreenCaptureOverlayWindow: NSWindow {
         acceptsMouseMovedEvents = true
         collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary, .ignoresCycle]
         hasShadow = false
+        isRestorable = false
     }
 }
 
@@ -282,11 +517,16 @@ final class ScreenCaptureOverlayView: NSView {
     var onComplete: ((NSRect) -> Void)?
     var onCancel: (() -> Void)?
     fileprivate var windowTargets: [CaptureWindowTarget] = []
+    fileprivate var frozenSnapshot: FrozenScreenSnapshot?
+    fileprivate var pixelSampler: ScreenPixelSampler?
 
     private var dragStart: NSPoint?
     private var selectionRect: NSRect = .zero
     private var hoveredWindowTarget: CaptureWindowTarget?
     private var pressedWindowTarget: CaptureWindowTarget?
+    private var cursorPoint: NSPoint?
+    private var currentPixelSample: PixelSample?
+    private var copyFeedbackText: String?
     private var trackingArea: NSTrackingArea?
 
     override var acceptsFirstResponder: Bool {
@@ -319,17 +559,24 @@ final class ScreenCaptureOverlayView: NSView {
     }
 
     override func mouseMoved(with event: NSEvent) {
-        updateHoveredWindow(at: event.locationInWindow)
+        let point = event.locationInWindow
+        updateInspector(at: point)
+        updateHoveredWindow(at: point)
+        updateCursor(at: point)
     }
 
     override func mouseExited(with event: NSEvent) {
         hoveredWindowTarget = nil
+        cursorPoint = nil
+        currentPixelSample = nil
         needsDisplay = true
     }
 
     override func mouseDown(with event: NSEvent) {
         let point = event.locationInWindow
+        updateInspector(at: point)
         updateHoveredWindow(at: point)
+
         dragStart = point
         pressedWindowTarget = hoveredWindowTarget
         selectionRect = .zero
@@ -342,6 +589,8 @@ final class ScreenCaptureOverlayView: NSView {
         }
 
         let currentPoint = event.locationInWindow
+        updateInspector(at: currentPoint)
+
         let distance = hypot(currentPoint.x - dragStart.x, currentPoint.y - dragStart.y)
 
         if distance > 4 {
@@ -380,6 +629,12 @@ final class ScreenCaptureOverlayView: NSView {
     override func keyDown(with event: NSEvent) {
         if event.keyCode == 53 {
             onCancel?()
+        } else if event.keyCode == 36 || event.keyCode == 49 || event.keyCode == 76 {
+            if !completeCurrentSelectionOrHover() {
+                super.keyDown(with: event)
+            }
+        } else if event.keyCode == 48 {
+            copyCurrentColor()
         } else {
             super.keyDown(with: event)
         }
@@ -388,7 +643,20 @@ final class ScreenCaptureOverlayView: NSView {
     override func draw(_ dirtyRect: NSRect) {
         super.draw(dirtyRect)
 
-        NSColor.black.withAlphaComponent(0.32).setFill()
+        if let frozenImage = frozenSnapshot?.image {
+            NSGraphicsContext.current?.imageInterpolation = .high
+            frozenImage.draw(
+                in: bounds,
+                from: NSRect(origin: .zero, size: frozenImage.size),
+                operation: .copy,
+                fraction: 1
+            )
+        } else {
+            NSColor.black.setFill()
+            bounds.fill()
+        }
+
+        NSColor.black.withAlphaComponent(0.46).setFill()
         bounds.fill()
 
         if selectionRect != .zero {
@@ -398,7 +666,15 @@ final class ScreenCaptureOverlayView: NSView {
             drawSelection(rect, title: hoveredWindowTarget.title)
         }
 
+        drawCursorGuide()
+        drawInspectorHUD()
         drawHint()
+    }
+
+    private func updateInspector(at point: NSPoint) {
+        cursorPoint = point
+        currentPixelSample = pixelSampler?.sample(at: point, in: bounds)
+        needsDisplay = true
     }
 
     private func updateHoveredWindow(at point: NSPoint) {
@@ -445,19 +721,48 @@ final class ScreenCaptureOverlayView: NSView {
         return clipped
     }
 
-    private func drawSelection(_ rect: NSRect, title: String?) {
-        NSColor.white.withAlphaComponent(0.08).setFill()
-        rect.fill()
+    private func completeCurrentSelectionOrHover() -> Bool {
+        if selectionRect.width >= 8, selectionRect.height >= 8 {
+            onComplete?(selectionRect)
+            return true
+        }
 
-        let path = NSBezierPath(rect: rect)
-        NSColor.white.withAlphaComponent(0.95).setStroke()
-        path.lineWidth = 1.5
-        path.stroke()
+        if let hoveredWindowTarget,
+           let rect = localCaptureRect(for: hoveredWindowTarget) {
+            onComplete?(rect)
+            return true
+        }
+
+        if let cursorPoint,
+           let target = target(at: cursorPoint),
+           let rect = localCaptureRect(for: target) {
+            onComplete?(rect)
+            return true
+        }
+
+        return false
+    }
+
+    private func drawSelection(_ rect: NSRect, title: String?) {
+        let selectionPath = NSBezierPath(roundedRect: rect, xRadius: 5, yRadius: 5)
+        NSColor.controlAccentColor.withAlphaComponent(0.14).setFill()
+        selectionPath.fill()
+
+        NSColor.controlAccentColor.withAlphaComponent(0.98).setStroke()
+        selectionPath.lineWidth = 2
+        selectionPath.stroke()
+
+        if rect.width >= 30, rect.height >= 30 {
+            drawSelectionSize(rect)
+        }
 
         guard let title, !title.isEmpty else {
             return
         }
+        drawWindowTitle(title, in: rect)
+    }
 
+    private func drawWindowTitle(_ title: String, in rect: NSRect) {
         let attributes: [NSAttributedString.Key: Any] = [
             .font: NSFont.systemFont(ofSize: 12, weight: .semibold),
             .foregroundColor: NSColor.white.withAlphaComponent(0.96)
@@ -465,29 +770,160 @@ final class ScreenCaptureOverlayView: NSView {
         let attributedTitle = NSAttributedString(string: title, attributes: attributes)
         let titleSize = attributedTitle.size()
         let titleRect = NSRect(
-            x: rect.minX + 8,
-            y: min(rect.maxY - titleSize.height - 8, bounds.maxY - titleSize.height - 12),
-            width: min(titleSize.width, max(40, rect.width - 16)),
+            x: rect.minX + 10,
+            y: min(rect.maxY - titleSize.height - 10, bounds.maxY - titleSize.height - 14),
+            width: min(titleSize.width, max(40, rect.width - 20)),
             height: titleSize.height
         )
         attributedTitle.draw(in: titleRect)
     }
 
-    private func drawHint() {
-        let text = "Click a highlighted window or drag an area. Esc cancels."
+    private func drawSelectionSize(_ rect: NSRect) {
+        let scale = window?.screen?.backingScaleFactor ?? 1
+        let text = "\(Int(round(rect.width * scale))) x \(Int(round(rect.height * scale)))"
         let attributes: [NSAttributedString.Key: Any] = [
-            .font: NSFont.systemFont(ofSize: 14, weight: .medium),
-            .foregroundColor: NSColor.white.withAlphaComponent(0.92)
+            .font: NSFont.monospacedSystemFont(ofSize: 11, weight: .medium),
+            .foregroundColor: NSColor.white.withAlphaComponent(0.96)
         ]
         let attributedText = NSAttributedString(string: text, attributes: attributes)
         let size = attributedText.size()
-        let rect = NSRect(
-            x: bounds.midX - size.width / 2,
-            y: bounds.maxY - size.height - 28,
-            width: size.width,
-            height: size.height
+        let bubble = NSRect(
+            x: min(max(rect.maxX - size.width - 18, bounds.minX + 10), bounds.maxX - size.width - 18),
+            y: max(rect.minY + 10, bounds.minY + 10),
+            width: size.width + 12,
+            height: size.height + 7
         )
-        attributedText.draw(in: rect)
+
+        NSColor.black.withAlphaComponent(0.72).setFill()
+        NSBezierPath(roundedRect: bubble, xRadius: 5, yRadius: 5).fill()
+        attributedText.draw(at: NSPoint(x: bubble.minX + 6, y: bubble.minY + 4))
+    }
+
+    private func drawCursorGuide() {
+        guard let cursorPoint else {
+            return
+        }
+
+        let guide = NSBezierPath()
+        guide.move(to: NSPoint(x: cursorPoint.x - 18, y: cursorPoint.y))
+        guide.line(to: NSPoint(x: cursorPoint.x - 5, y: cursorPoint.y))
+        guide.move(to: NSPoint(x: cursorPoint.x + 5, y: cursorPoint.y))
+        guide.line(to: NSPoint(x: cursorPoint.x + 18, y: cursorPoint.y))
+        guide.move(to: NSPoint(x: cursorPoint.x, y: cursorPoint.y - 18))
+        guide.line(to: NSPoint(x: cursorPoint.x, y: cursorPoint.y - 5))
+        guide.move(to: NSPoint(x: cursorPoint.x, y: cursorPoint.y + 5))
+        guide.line(to: NSPoint(x: cursorPoint.x, y: cursorPoint.y + 18))
+
+        NSColor.white.withAlphaComponent(0.72).setStroke()
+        guide.lineWidth = 1
+        guide.stroke()
+
+        NSColor.black.withAlphaComponent(0.8).setStroke()
+        let dot = NSBezierPath(ovalIn: NSRect(x: cursorPoint.x - 2.5, y: cursorPoint.y - 2.5, width: 5, height: 5))
+        dot.lineWidth = 1
+        dot.stroke()
+    }
+
+    private func drawInspectorHUD() {
+        guard let cursorPoint, let sample = currentPixelSample else {
+            return
+        }
+
+        let titleAttributes: [NSAttributedString.Key: Any] = [
+            .font: NSFont.monospacedSystemFont(ofSize: 12, weight: .semibold),
+            .foregroundColor: NSColor.white.withAlphaComponent(0.96)
+        ]
+        let detailAttributes: [NSAttributedString.Key: Any] = [
+            .font: NSFont.monospacedSystemFont(ofSize: 11, weight: .regular),
+            .foregroundColor: NSColor.white.withAlphaComponent(0.74)
+        ]
+        let title = NSAttributedString(string: copyFeedbackText ?? sample.hexString, attributes: titleAttributes)
+        let detail = NSAttributedString(string: "\(sample.rgbString)   X \(sample.x) Y \(sample.y)", attributes: detailAttributes)
+        let titleSize = title.size()
+        let detailSize = detail.size()
+        let hudWidth = max(titleSize.width, detailSize.width) + 46
+        let hudHeight: CGFloat = 46
+        let hudRect = inspectorRect(near: cursorPoint, width: hudWidth, height: hudHeight)
+
+        NSColor.black.withAlphaComponent(0.82).setFill()
+        NSBezierPath(roundedRect: hudRect, xRadius: 7, yRadius: 7).fill()
+        NSColor.white.withAlphaComponent(0.14).setStroke()
+        NSBezierPath(roundedRect: hudRect, xRadius: 7, yRadius: 7).stroke()
+
+        let swatchRect = NSRect(x: hudRect.minX + 10, y: hudRect.minY + 13, width: 20, height: 20)
+        sample.color.setFill()
+        NSBezierPath(roundedRect: swatchRect, xRadius: 4, yRadius: 4).fill()
+        NSColor.white.withAlphaComponent(0.32).setStroke()
+        NSBezierPath(roundedRect: swatchRect, xRadius: 4, yRadius: 4).stroke()
+
+        title.draw(at: NSPoint(x: hudRect.minX + 38, y: hudRect.minY + 24))
+        detail.draw(at: NSPoint(x: hudRect.minX + 38, y: hudRect.minY + 9))
+    }
+
+    private func inspectorRect(near point: NSPoint, width: CGFloat, height: CGFloat) -> NSRect {
+        var x = point.x + 18
+        var y = point.y + 18
+
+        if x + width > bounds.maxX - 12 {
+            x = point.x - width - 18
+        }
+
+        if y + height > bounds.maxY - 12 {
+            y = point.y - height - 18
+        }
+
+        return NSRect(
+            x: max(bounds.minX + 12, min(x, bounds.maxX - width - 12)),
+            y: max(bounds.minY + 12, min(y, bounds.maxY - height - 12)),
+            width: width,
+            height: height
+        )
+    }
+
+    private func copyCurrentColor() {
+        guard let sample = currentPixelSample else {
+            return
+        }
+
+        let text = sample.hexString
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.setString(text, forType: .string)
+        copyFeedbackText = "Copied \(text)"
+        needsDisplay = true
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.85) { [weak self] in
+            guard self?.copyFeedbackText == "Copied \(text)" else {
+                return
+            }
+
+            self?.copyFeedbackText = nil
+            self?.needsDisplay = true
+        }
+    }
+
+    private func drawHint() {
+        let text = "Drag to capture   Click window   Tab copies color   Esc cancels"
+        let attributes: [NSAttributedString.Key: Any] = [
+            .font: NSFont.systemFont(ofSize: 13, weight: .medium),
+            .foregroundColor: NSColor.white.withAlphaComponent(0.88)
+        ]
+        let attributedText = NSAttributedString(string: text, attributes: attributes)
+        let size = attributedText.size()
+        let backgroundRect = NSRect(
+            x: bounds.midX - (size.width + 24) / 2,
+            y: bounds.maxY - size.height - 38,
+            width: size.width + 24,
+            height: size.height + 12
+        )
+        NSColor.black.withAlphaComponent(0.58).setFill()
+        NSBezierPath(roundedRect: backgroundRect, xRadius: 7, yRadius: 7).fill()
+        attributedText.draw(
+            at: NSPoint(
+                x: backgroundRect.minX + 12,
+                y: backgroundRect.minY + 6
+            )
+        )
     }
 
     private func normalizedRect(from start: NSPoint, to end: NSPoint) -> NSRect {
@@ -497,6 +933,10 @@ final class ScreenCaptureOverlayView: NSView {
             width: abs(start.x - end.x),
             height: abs(start.y - end.y)
         )
+    }
+
+    private func updateCursor(at point: NSPoint) {
+        NSCursor.crosshair.set()
     }
 }
 

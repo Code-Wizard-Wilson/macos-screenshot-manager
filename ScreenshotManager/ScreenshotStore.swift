@@ -1,11 +1,25 @@
 import AppKit
 import Foundation
 import ImageIO
+import QuartzCore
 import ServiceManagement
 import SwiftUI
+import UniformTypeIdentifiers
 
 @MainActor
 final class ScreenshotStore: ObservableObject {
+    static let imageDropTypeIdentifiers: [String] = [
+        UTType.fileURL.identifier,
+        UTType.url.identifier,
+        UTType.image.identifier,
+        UTType.png.identifier,
+        UTType.jpeg.identifier,
+        UTType.tiff.identifier,
+        UTType.heic.identifier,
+        UTType.heif.identifier,
+        "org.webmproject.webp"
+    ]
+
     @Published private(set) var items: [ScreenshotItem] = []
     @Published private(set) var isLoading = false
     @Published private(set) var isCapturing = false
@@ -23,6 +37,9 @@ final class ScreenshotStore: ObservableObject {
     private let imageExtensions: Set<String> = ["png", "jpg", "jpeg", "heic", "heif", "tiff", "webp"]
     private var noticeClearTask: Task<Void, Never>?
     private var captureEditorWindowController: NSWindowController?
+    private var previewWindowController: NSWindowController?
+    private var temporaryItems: [ScreenshotItem] = []
+    private var temporaryImages: [String: NSImage] = [:]
 
     var hotkeysDidChange: (() -> Void)?
 
@@ -103,25 +120,33 @@ final class ScreenshotStore: ObservableObject {
             do {
                 let scannedItems = try Self.scanFolder(folderURL, imageExtensions: imageExtensions)
                 await MainActor.run {
-                    self.items = scannedItems
+                    self.items = self.temporaryItems + scannedItems
                     if let selectedURL {
-                        self.selectedItem = scannedItems.first { $0.url == selectedURL } ?? scannedItems.first
+                        self.selectedItem = self.items.first { $0.url == selectedURL } ?? self.items.first
                     } else {
                         self.selectedItem = self.selectedItem.flatMap { selected in
-                            scannedItems.first(where: { $0.id == selected.id })
-                        } ?? scannedItems.first
+                            self.items.first(where: { $0.id == selected.id })
+                        } ?? self.items.first
                     }
                     self.isLoading = false
                 }
             } catch {
                 await MainActor.run {
-                    self.items = []
-                    self.selectedItem = nil
+                    self.items = self.temporaryItems
+                    self.selectedItem = self.temporaryItems.first
                     self.errorMessage = error.localizedDescription
                     self.isLoading = false
                 }
             }
         }
+    }
+
+    var requiredPermissionsGranted: Bool {
+        screenRecordingAccessGranted
+    }
+
+    var missingRequiredPermissionText: String {
+        missingPermissionNames.joined(separator: " and ")
     }
 
     func captureToClipboard() {
@@ -132,8 +157,56 @@ final class ScreenshotStore: ObservableObject {
         runOverlayCapture(mode: .save)
     }
 
+    func refreshRequiredPermissions() {
+        refreshScreenRecordingAccess()
+    }
+
+    func requestRequiredPermissions() {
+        let hadScreenRecording = screenRecordingAccessGranted
+        if !hadScreenRecording {
+            _ = requestScreenRecordingAccess()
+        }
+
+        refreshRequiredPermissions()
+
+        guard !screenRecordingAccessGranted else {
+            showNotice(
+                title: "Permissions Ready",
+                detail: "Screen Recording is active.",
+                systemImage: "checkmark.shield",
+                tone: .success
+            )
+            return
+        }
+
+        let missing = missingPermissionNames.joined(separator: " and ")
+        showNotice(
+            title: "Permission Required",
+            detail: "Allow \(missing) in System Settings, then quit and reopen the app.",
+            systemImage: "lock.rectangle",
+            tone: .failure
+        )
+    }
+
     func refreshScreenRecordingAccess() {
-        screenRecordingAccessGranted = ScreenCaptureOverlayController.hasScreenCaptureAccess
+        let hasAccess = ScreenCaptureOverlayController.hasScreenCaptureAccess
+        screenRecordingAccessGranted = hasAccess
+
+        if hasAccess {
+            clearScreenRecordingError()
+        }
+    }
+
+    @discardableResult
+    func requestScreenRecordingAccess() -> Bool {
+        if ScreenCaptureOverlayController.hasScreenCaptureAccess {
+            refreshScreenRecordingAccess()
+            return true
+        }
+
+        let granted = ScreenCaptureOverlayController.requestScreenCaptureAccess()
+        refreshScreenRecordingAccess()
+        return granted || screenRecordingAccessGranted
     }
 
     func refreshLaunchAtLoginStatus() {
@@ -164,6 +237,10 @@ final class ScreenshotStore: ObservableObject {
     }
 
     func openScreenRecordingSettings() {
+        openScreenRecordingSettingsURL()
+    }
+
+    private func openScreenRecordingSettingsURL() {
         guard let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture") else {
             return
         }
@@ -194,15 +271,76 @@ final class ScreenshotStore: ObservableObject {
     }
 
     func open(_ item: ScreenshotItem) {
+        guard !item.isTemporary else {
+            openPreviewWindow(for: item)
+            return
+        }
+
         NSWorkspace.shared.open(item.url)
     }
 
+    func openPreviewWindow(for item: ScreenshotItem) {
+        previewWindowController?.close()
+
+        let contentView = ScreenshotPreviewWindowView(store: self, item: item)
+        let hostingController = NSHostingController(rootView: contentView)
+
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 1180, height: 780),
+            styleMask: [.titled, .closable, .miniaturizable, .resizable],
+            backing: .buffered,
+            defer: false
+        )
+        window.title = item.fileName
+        window.titleVisibility = .hidden
+        window.identifier = NSUserInterfaceItemIdentifier("ScreenshotManager.PreviewWindow")
+        window.titlebarAppearsTransparent = false
+        window.backgroundColor = .windowBackgroundColor
+        window.isOpaque = true
+        window.minSize = NSSize(width: 760, height: 520)
+        window.collectionBehavior.insert(.fullScreenPrimary)
+        window.contentViewController = hostingController
+        window.center()
+        window.isReleasedWhenClosed = false
+        window.isRestorable = false
+
+        let controller = NSWindowController(window: window)
+        previewWindowController = controller
+        showWindowWithEntranceAnimation(controller)
+    }
+
+    func openAnnotationEditor(for item: ScreenshotItem) {
+        Task { @MainActor in
+            guard let image = await loadImage(for: item) else {
+                showNotice(
+                    title: "Edit Failed",
+                    detail: "Could not load this screenshot.",
+                    systemImage: "exclamationmark.triangle",
+                    tone: .failure
+                )
+                return
+            }
+
+            showCaptureEditor(image: image, destination: .edit(item))
+        }
+    }
+
     func revealInFinder(_ item: ScreenshotItem) {
+        guard !item.isTemporary else {
+            showNotice(
+                title: "Temporary Clipboard Item",
+                detail: "This screenshot is in memory only.",
+                systemImage: "memorychip",
+                tone: .neutral
+            )
+            return
+        }
+
         NSWorkspace.shared.activateFileViewerSelecting([item.url])
     }
 
     func copy(_ item: ScreenshotItem) {
-        guard let image = NSImage(contentsOf: item.url) else {
+        guard let image = image(for: item) else {
             return
         }
 
@@ -217,9 +355,61 @@ final class ScreenshotStore: ObservableObject {
         pasteboard.writeObjects([image])
     }
 
+    func importDroppedItems(_ providers: [NSItemProvider]) {
+        guard !providers.isEmpty else {
+            return
+        }
+
+        let folderURL = folderURL
+        let imageExtensions = imageExtensions
+
+        Task { @MainActor in
+            do {
+                let importedURLs = try await Self.importDroppedProviders(
+                    providers,
+                    into: folderURL,
+                    imageExtensions: imageExtensions
+                )
+
+                guard !importedURLs.isEmpty else {
+                    showNotice(
+                        title: "Nothing Imported",
+                        detail: "Drop PNG, JPG, HEIC, TIFF, WebP, or images from Photos.",
+                        systemImage: "photo.badge.exclamationmark",
+                        tone: .neutral
+                    )
+                    return
+                }
+
+                refresh(selecting: importedURLs.last)
+                showNotice(
+                    title: importedURLs.count == 1 ? "Image Imported" : "\(importedURLs.count) Images Imported",
+                    detail: importedURLs.count == 1 ? importedURLs[0].lastPathComponent : "Saved to Library.",
+                    systemImage: "tray.and.arrow.down",
+                    tone: .success
+                )
+            } catch {
+                errorMessage = error.localizedDescription
+                showNotice(
+                    title: "Import Failed",
+                    detail: error.localizedDescription,
+                    systemImage: "exclamationmark.triangle",
+                    tone: .failure
+                )
+            }
+        }
+    }
+
     func saveEditedCopy(_ image: NSImage, source item: ScreenshotItem) {
         do {
-            let savedURL = try ImageEditingService.saveCopy(image, sourceURL: item.url)
+            let savedURL: URL
+
+            if item.isTemporary {
+                savedURL = try ScreenshotCaptureService.save(image, in: folderURL, kind: .saved)
+            } else {
+                savedURL = try ImageEditingService.saveCopy(image, sourceURL: item.url)
+            }
+
             refresh(selecting: savedURL)
         } catch {
             errorMessage = error.localizedDescription
@@ -233,6 +423,11 @@ final class ScreenshotStore: ObservableObject {
     }
 
     func replaceImage(_ image: NSImage, item: ScreenshotItem) {
+        if item.isTemporary {
+            replaceTemporaryImage(image, item: item)
+            return
+        }
+
         do {
             try ImageEditingService.write(image, to: item.url)
             refresh(selecting: item.url)
@@ -248,6 +443,14 @@ final class ScreenshotStore: ObservableObject {
     }
 
     func delete(_ item: ScreenshotItem) {
+        if item.isTemporary {
+            temporaryImages[item.id] = nil
+            temporaryItems.removeAll { $0.id == item.id }
+            items.removeAll { $0.id == item.id }
+            selectedItem = items.first
+            return
+        }
+
         do {
             try FileManager.default.trashItem(at: item.url, resultingItemURL: nil)
             refresh()
@@ -268,30 +471,38 @@ final class ScreenshotStore: ObservableObject {
     }
 
     func finishAnnotatedCapture(_ image: NSImage, mode: CaptureMode) {
-        switch mode {
-        case .clipboard:
-            do {
-                let url = try ScreenshotCaptureService.save(image, in: folderURL, kind: .clipboard)
-                refresh(selecting: url)
-            } catch {
-                errorMessage = error.localizedDescription
-                showNotice(
-                    title: "Library Write Failed",
-                    detail: error.localizedDescription,
-                    systemImage: "exclamationmark.triangle",
-                    tone: .failure
-                )
-            }
+        finishAnnotatedCapture(image, destination: .capture(mode))
+    }
 
+    func finishAnnotatedCapture(_ image: NSImage, destination: CaptureAnnotationDestination) {
+        switch destination {
+        case .capture(.clipboard):
             let pasteboard = NSPasteboard.general
             pasteboard.clearContents()
             pasteboard.writeObjects([image])
-            closeCaptureEditor()
-        case .save:
+            let item = addTemporaryClipboardImage(image)
+            closeCaptureEditor(animated: true)
+            showNotice(
+                title: "Copied to Clipboard",
+                detail: "Visible until the app quits.",
+                systemImage: "doc.on.clipboard",
+                tone: .success
+            )
+            selectedItem = item
+        case .capture(.save):
             do {
                 let url = try ScreenshotCaptureService.save(image, in: folderURL, kind: .saved)
+                let pasteboard = NSPasteboard.general
+                pasteboard.clearContents()
+                pasteboard.writeObjects([image])
                 refresh(selecting: url)
-                closeCaptureEditor()
+                closeCaptureEditor(animated: true)
+                showNotice(
+                    title: "Saved to Library",
+                    detail: "Also copied to Clipboard.",
+                    systemImage: "tray.and.arrow.down",
+                    tone: .success
+                )
             } catch {
                 errorMessage = error.localizedDescription
                 showNotice(
@@ -301,12 +512,112 @@ final class ScreenshotStore: ObservableObject {
                     tone: .failure
                 )
             }
+        case .edit(let item):
+            do {
+                let pasteboard = NSPasteboard.general
+                pasteboard.clearContents()
+                pasteboard.writeObjects([image])
+
+                if item.isTemporary {
+                    replaceTemporaryImage(image, item: item, showsNotice: false)
+                    closeCaptureEditor(animated: true)
+                    showNotice(
+                        title: "Screenshot Updated",
+                        detail: "Updated in memory and copied to Clipboard.",
+                        systemImage: "square.and.arrow.down",
+                        tone: .success
+                    )
+                } else {
+                    try ImageEditingService.write(image, to: item.url)
+                    refresh(selecting: item.url)
+                    closeCaptureEditor(animated: true)
+                    showNotice(
+                        title: "Screenshot Updated",
+                        detail: "Saved and copied to Clipboard.",
+                        systemImage: "square.and.arrow.down",
+                        tone: .success
+                    )
+                }
+            } catch {
+                errorMessage = error.localizedDescription
+                showNotice(
+                    title: "Update Failed",
+                    detail: error.localizedDescription,
+                    systemImage: "exclamationmark.triangle",
+                    tone: .failure
+                )
+            }
         }
     }
 
-    func closeCaptureEditor() {
-        captureEditorWindowController?.close()
+    func image(for item: ScreenshotItem) -> NSImage? {
+        if let image = temporaryImages[item.id] {
+            return image
+        }
+
+        return NSImage(contentsOf: item.url)
+    }
+
+    func loadImage(for item: ScreenshotItem) async -> NSImage? {
+        if let image = temporaryImages[item.id] {
+            return image
+        }
+
+        let url = item.url
+        return await Task.detached(priority: .userInitiated) {
+            NSImage(contentsOf: url)
+        }.value
+    }
+
+    func thumbnail(for item: ScreenshotItem, maxPixelSize: Int) async -> NSImage? {
+        if let image = temporaryImages[item.id] {
+            return image
+        }
+
+        let url = item.url
+        return await Task.detached(priority: .utility) {
+            let options: [CFString: Any] = [
+                kCGImageSourceShouldCache: false,
+                kCGImageSourceCreateThumbnailFromImageAlways: true,
+                kCGImageSourceThumbnailMaxPixelSize: maxPixelSize,
+                kCGImageSourceCreateThumbnailWithTransform: true
+            ]
+
+            guard let source = CGImageSourceCreateWithURL(url as CFURL, nil),
+                  let image = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else {
+                return nil
+            }
+
+            return NSImage(cgImage: image, size: NSSize(width: image.width, height: image.height))
+        }.value
+    }
+
+    func closeCaptureEditor(animated: Bool = false) {
+        guard let controller = captureEditorWindowController,
+              let window = controller.window else {
+            captureEditorWindowController = nil
+            return
+        }
+
         captureEditorWindowController = nil
+
+        guard animated, window.isVisible else {
+            window.close()
+            return
+        }
+
+        let targetFrame = Self.scaledWindowFrame(from: window.frame, scale: 0.982, yOffset: 18)
+
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0.17
+            context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+            window.animator().alphaValue = 0
+            window.animator().setFrame(targetFrame, display: true)
+        } completionHandler: {
+            Task { @MainActor in
+                window.close()
+            }
+        }
     }
 
     private func runOverlayCapture(mode: CaptureMode) {
@@ -314,14 +625,19 @@ final class ScreenshotStore: ObservableObject {
             return
         }
 
-        refreshScreenRecordingAccess()
+        refreshRequiredPermissions()
+
+        if !screenRecordingAccessGranted, !requestScreenRecordingAccess() {
+            showScreenRecordingRequiredNotice()
+            return
+        }
 
         isCapturing = true
         errorMessage = nil
         let hiddenWindows = hideVisibleAppWindowsForCapture()
 
         Task { @MainActor in
-            try? await Task.sleep(nanoseconds: 120_000_000)
+            try? await Task.sleep(nanoseconds: 45_000_000)
 
             ScreenCaptureOverlayController.shared.start { [weak self] result in
                 guard let self else {
@@ -344,10 +660,18 @@ final class ScreenshotStore: ObservableObject {
                 case .failure(let error):
                     restoreAppWindows(hiddenWindows)
                     errorMessage = error.localizedDescription
+
+                    let isPermissionError: Bool
+                    if case .screenRecordingPermissionRequired = error as? ScreenCaptureOverlayError {
+                        isPermissionError = true
+                    } else {
+                        isPermissionError = false
+                    }
+
                     showNotice(
-                        title: "Capture Failed",
+                        title: isPermissionError ? "Screen Recording Required" : "Capture Failed",
                         detail: error.localizedDescription,
-                        systemImage: "exclamationmark.triangle",
+                        systemImage: isPermissionError ? "lock.rectangle" : "exclamationmark.triangle",
                         tone: .failure
                     )
                 }
@@ -355,35 +679,167 @@ final class ScreenshotStore: ObservableObject {
         }
     }
 
+    private func showScreenRecordingRequiredNotice(openSettings: Bool = false) {
+        let message = ScreenCaptureOverlayError.screenRecordingPermissionRequired.localizedDescription
+        errorMessage = message
+        showNotice(
+            title: "Screen Recording Required",
+            detail: message,
+            systemImage: "lock.rectangle",
+            tone: .failure
+        )
+
+        if openSettings {
+            openScreenRecordingSettingsURL()
+        }
+    }
+
+    private func clearScreenRecordingError() {
+        let permissionMessage = ScreenCaptureOverlayError.screenRecordingPermissionRequired.localizedDescription
+
+        if errorMessage == permissionMessage {
+            errorMessage = nil
+        }
+    }
+
+    private var missingPermissionNames: [String] {
+        var names: [String] = []
+
+        if !screenRecordingAccessGranted {
+            names.append("Screen Recording")
+        }
+
+        return names
+    }
+
     private func handleCapturedImage(_ image: NSImage, mode: CaptureMode) {
         showCaptureEditor(image: image, mode: mode)
     }
 
+    private func addTemporaryClipboardImage(_ image: NSImage) -> ScreenshotItem {
+        let id = "temporary-\(UUID().uuidString)"
+        let now = Date()
+        let dimensions = Self.imageDimensions(image: image)
+        let byteSize = Int64(image.tiffRepresentation?.count ?? 0)
+        let fileName = "\(CaptureKind.clipboard.filePrefix) Screenshot \(Self.fileTimestamp()).png"
+        let item = ScreenshotItem(
+            id: id,
+            url: URL(string: "memory://clipboard/\(id).png")!,
+            fileName: fileName,
+            captureKind: .clipboard,
+            createdAt: now,
+            modifiedAt: now,
+            byteSize: byteSize,
+            pixelWidth: dimensions.width,
+            pixelHeight: dimensions.height
+        )
+
+        temporaryImages[id] = image
+        temporaryItems.insert(item, at: 0)
+        items = temporaryItems + items.filter { !$0.isTemporary }
+        return item
+    }
+
+    private func replaceTemporaryImage(_ image: NSImage, item: ScreenshotItem, showsNotice: Bool = true) {
+        guard let index = temporaryItems.firstIndex(where: { $0.id == item.id }) else {
+            return
+        }
+
+        let dimensions = Self.imageDimensions(image: image)
+        let updatedItem = ScreenshotItem(
+            id: item.id,
+            url: item.url,
+            fileName: item.fileName,
+            captureKind: item.captureKind,
+            createdAt: item.createdAt,
+            modifiedAt: Date(),
+            byteSize: Int64(image.tiffRepresentation?.count ?? 0),
+            pixelWidth: dimensions.width,
+            pixelHeight: dimensions.height
+        )
+
+        temporaryImages[item.id] = image
+        temporaryItems[index] = updatedItem
+        items = temporaryItems + items.filter { !$0.isTemporary }
+        selectedItem = updatedItem
+        guard showsNotice else {
+            return
+        }
+
+        showNotice(
+            title: "Temporary Image Updated",
+            detail: "It is still in memory only.",
+            systemImage: "memorychip",
+            tone: .success
+        )
+    }
+
     private func showCaptureEditor(image: NSImage, mode: CaptureMode) {
+        showCaptureEditor(image: image, destination: .capture(mode))
+    }
+
+    private func showCaptureEditor(image: NSImage, destination: CaptureAnnotationDestination) {
         closeCaptureEditor()
 
-        let session = CaptureAnnotationSession(image: image, mode: mode)
+        let session = CaptureAnnotationSession(image: image, destination: destination)
         let contentView = CaptureAnnotationView(store: self, session: session)
         let hostingController = NSHostingController(rootView: contentView)
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 1120, height: 760),
-            styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
+            contentRect: NSRect(x: 0, y: 0, width: 1280, height: 760),
+            styleMask: [.titled, .closable, .miniaturizable, .resizable],
             backing: .buffered,
             defer: false
         )
         window.title = "Annotate"
-        window.titlebarAppearsTransparent = true
+        window.titleVisibility = .hidden
+        window.identifier = NSUserInterfaceItemIdentifier("ScreenshotManager.AnnotationWindow")
+        window.titlebarAppearsTransparent = false
         window.backgroundColor = .windowBackgroundColor
         window.isOpaque = true
-        window.minSize = NSSize(width: 920, height: 620)
+        window.minSize = NSSize(width: 980, height: 620)
         window.contentViewController = hostingController
         window.center()
         window.isReleasedWhenClosed = false
+        window.isRestorable = false
 
         let controller = NSWindowController(window: window)
         captureEditorWindowController = controller
+        showWindowWithEntranceAnimation(controller)
+    }
+
+    private func showWindowWithEntranceAnimation(_ controller: NSWindowController) {
+        guard let window = controller.window else {
+            controller.showWindow(nil)
+            NSApp.activate(ignoringOtherApps: true)
+            return
+        }
+
+        let targetFrame = window.frame
+        let startFrame = Self.scaledWindowFrame(from: targetFrame, scale: 0.982, yOffset: -14)
+        window.alphaValue = 0
+        window.setFrame(startFrame, display: false)
+
         controller.showWindow(nil)
         NSApp.activate(ignoringOtherApps: true)
+
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0.19
+            context.timingFunction = CAMediaTimingFunction(name: .easeOut)
+            window.animator().alphaValue = 1
+            window.animator().setFrame(targetFrame, display: true)
+        }
+    }
+
+    private static func scaledWindowFrame(from frame: NSRect, scale: CGFloat, yOffset: CGFloat) -> NSRect {
+        let width = frame.width * scale
+        let height = frame.height * scale
+
+        return NSRect(
+            x: frame.midX - width / 2,
+            y: frame.midY - height / 2 + yOffset,
+            width: width,
+            height: height
+        )
     }
 
     private func hideVisibleAppWindowsForCapture() -> [NSWindow] {
@@ -416,6 +872,215 @@ final class ScreenshotStore: ObservableObject {
 
             captureNotice = nil
         }
+    }
+
+    private static func importDroppedProviders(
+        _ providers: [NSItemProvider],
+        into folderURL: URL,
+        imageExtensions: Set<String>
+    ) async throws -> [URL] {
+        try FileManager.default.createDirectory(at: folderURL, withIntermediateDirectories: true)
+
+        var importedURLs: [URL] = []
+
+        for provider in providers {
+            guard let payload = try await droppedImagePayload(from: provider, imageExtensions: imageExtensions) else {
+                continue
+            }
+
+            let destinationURL = uniqueImportURL(
+                proposedName: payload.fileName,
+                fallbackExtension: payload.fileExtension,
+                in: folderURL
+            )
+
+            switch payload.source {
+            case .file(let sourceURL):
+                let didAccess = sourceURL.startAccessingSecurityScopedResource()
+                defer {
+                    if didAccess {
+                        sourceURL.stopAccessingSecurityScopedResource()
+                    }
+                }
+
+                try FileManager.default.copyItem(at: sourceURL, to: destinationURL)
+            case .data(let data):
+                try data.write(to: destinationURL, options: .atomic)
+            }
+
+            importedURLs.append(destinationURL)
+        }
+
+        return importedURLs
+    }
+
+    private static func droppedImagePayload(
+        from provider: NSItemProvider,
+        imageExtensions: Set<String>
+    ) async throws -> DroppedImagePayload? {
+        for urlTypeIdentifier in [UTType.fileURL.identifier, UTType.url.identifier] {
+            guard provider.hasItemConformingToTypeIdentifier(urlTypeIdentifier),
+                  let fileURL = try await droppedURL(from: provider, typeIdentifier: urlTypeIdentifier),
+                  fileURL.isFileURL else {
+                continue
+            }
+
+            let fileExtension = fileURL.pathExtension.lowercased()
+
+            if imageExtensions.contains(fileExtension) {
+                return DroppedImagePayload(
+                    source: .file(fileURL),
+                    fileName: fileURL.lastPathComponent,
+                    fileExtension: fileExtension
+                )
+            }
+        }
+
+        for type in imageDropTypes {
+            guard provider.hasItemConformingToTypeIdentifier(type.identifier) else {
+                continue
+            }
+
+            if let fileData = try? await droppedFileRepresentationData(from: provider, typeIdentifier: type.identifier),
+               !fileData.data.isEmpty {
+                return DroppedImagePayload(
+                    source: .data(fileData.data),
+                    fileName: fileData.fileName ?? provider.suggestedName,
+                    fileExtension: fileData.fileExtension ?? type.fileExtension
+                )
+            }
+
+            if let data = try? await droppedDataRepresentation(from: provider, typeIdentifier: type.identifier),
+               !data.isEmpty {
+                return DroppedImagePayload(
+                    source: .data(data),
+                    fileName: provider.suggestedName,
+                    fileExtension: type.fileExtension
+                )
+            }
+        }
+
+        return nil
+    }
+
+    private static func droppedURL(from provider: NSItemProvider, typeIdentifier: String) async throws -> URL? {
+        try await withCheckedThrowingContinuation { continuation in
+            provider.loadItem(forTypeIdentifier: typeIdentifier, options: nil) { item, error in
+                if let error {
+                    continuation.resume(throwing: error)
+                    return
+                }
+
+                let url: URL?
+
+                switch item {
+                case let fileURL as URL:
+                    url = fileURL
+                case let fileURL as NSURL:
+                    url = fileURL as URL
+                case let data as Data:
+                    url = URL(dataRepresentation: data, relativeTo: nil)
+                case let string as String:
+                    if let parsedURL = URL(string: string), parsedURL.isFileURL {
+                        url = parsedURL
+                    } else {
+                        url = URL(fileURLWithPath: string)
+                    }
+                default:
+                    url = nil
+                }
+
+                continuation.resume(returning: url)
+            }
+        }
+    }
+
+    private static func droppedFileRepresentationData(
+        from provider: NSItemProvider,
+        typeIdentifier: String
+    ) async throws -> DroppedFileData? {
+        try await withCheckedThrowingContinuation { continuation in
+            provider.loadFileRepresentation(forTypeIdentifier: typeIdentifier) { url, error in
+                if let error {
+                    continuation.resume(throwing: error)
+                    return
+                }
+
+                guard let url else {
+                    continuation.resume(returning: nil)
+                    return
+                }
+
+                do {
+                    let data = try Data(contentsOf: url)
+                    continuation.resume(returning: DroppedFileData(
+                        data: data,
+                        fileName: url.lastPathComponent,
+                        fileExtension: url.pathExtension.isEmpty ? nil : url.pathExtension.lowercased()
+                    ))
+                } catch {
+                    continuation.resume(throwing: error)
+                }
+            }
+        }
+    }
+
+    private static func droppedDataRepresentation(
+        from provider: NSItemProvider,
+        typeIdentifier: String
+    ) async throws -> Data? {
+        try await withCheckedThrowingContinuation { continuation in
+            provider.loadDataRepresentation(forTypeIdentifier: typeIdentifier) { data, error in
+                if let error {
+                    continuation.resume(throwing: error)
+                    return
+                }
+
+                continuation.resume(returning: data)
+            }
+        }
+    }
+
+    private static func uniqueImportURL(proposedName: String?, fallbackExtension: String, in folderURL: URL) -> URL {
+        let fallbackName = "Imported Image \(Self.fileTimestamp())"
+        let rawName = (proposedName?.isEmpty == false ? proposedName : fallbackName) ?? fallbackName
+        let proposedURL = URL(filePath: rawName)
+        let proposedExtension = proposedURL.pathExtension.isEmpty ? fallbackExtension : proposedURL.pathExtension
+        let baseName = proposedURL.deletingPathExtension().lastPathComponent
+        let safeBaseName = sanitizedFileStem(baseName.isEmpty ? fallbackName : baseName)
+        let safeExtension = sanitizedFileExtension(proposedExtension.isEmpty ? fallbackExtension : proposedExtension)
+
+        var candidate = folderURL.appending(path: "\(safeBaseName).\(safeExtension)")
+        var suffix = 2
+
+        while FileManager.default.fileExists(atPath: candidate.path(percentEncoded: false)) {
+            candidate = folderURL.appending(path: "\(safeBaseName) \(suffix).\(safeExtension)")
+            suffix += 1
+        }
+
+        return candidate
+    }
+
+    private static func sanitizedFileStem(_ value: String) -> String {
+        let invalidCharacters = CharacterSet(charactersIn: "/\\:?%*|\"<>")
+            .union(.newlines)
+            .union(.controlCharacters)
+        let parts = value.components(separatedBy: invalidCharacters)
+        let sanitized = parts.joined(separator: " ").trimmingCharacters(in: .whitespacesAndNewlines)
+        return sanitized.isEmpty ? "Imported Image \(fileTimestamp())" : sanitized
+    }
+
+    private static func sanitizedFileExtension(_ value: String) -> String {
+        let sanitized = value
+            .lowercased()
+            .filter { $0.isLetter || $0.isNumber }
+        return sanitized.isEmpty ? "png" : String(sanitized)
+    }
+
+    private static func fileTimestamp() -> String {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd 'at' HH.mm.ss"
+        return formatter.string(from: Date())
     }
 
     private static func defaultScreenshotFolder() -> URL {
@@ -484,6 +1149,53 @@ final class ScreenshotStore: ObservableObject {
         let height = properties[kCGImagePropertyPixelHeight] as? Int ?? 0
         return (width, height)
     }
+
+    private static func imageDimensions(image: NSImage) -> (width: Int, height: Int) {
+        if let cgImage = image.cgImage(forProposedRect: nil, context: nil, hints: nil) {
+            return (cgImage.width, cgImage.height)
+        }
+
+        let bestRepresentation = image.representations.max { left, right in
+            (left.pixelsWide * left.pixelsHigh) < (right.pixelsWide * right.pixelsHigh)
+        }
+
+        return (
+            max(bestRepresentation?.pixelsWide ?? Int(image.size.width), 0),
+            max(bestRepresentation?.pixelsHigh ?? Int(image.size.height), 0)
+        )
+    }
+
+    private static let imageDropTypes: [DroppedImageType] = [
+        DroppedImageType(identifier: UTType.png.identifier, fileExtension: "png"),
+        DroppedImageType(identifier: UTType.jpeg.identifier, fileExtension: "jpg"),
+        DroppedImageType(identifier: UTType.heic.identifier, fileExtension: "heic"),
+        DroppedImageType(identifier: UTType.heif.identifier, fileExtension: "heif"),
+        DroppedImageType(identifier: UTType.tiff.identifier, fileExtension: "tiff"),
+        DroppedImageType(identifier: "org.webmproject.webp", fileExtension: "webp"),
+        DroppedImageType(identifier: UTType.image.identifier, fileExtension: "png")
+    ]
+}
+
+private struct DroppedImageType {
+    let identifier: String
+    let fileExtension: String
+}
+
+private struct DroppedImagePayload {
+    enum Source {
+        case file(URL)
+        case data(Data)
+    }
+
+    let source: Source
+    let fileName: String?
+    let fileExtension: String
+}
+
+private struct DroppedFileData {
+    let data: Data
+    let fileName: String?
+    let fileExtension: String?
 }
 
 enum CaptureMode {
@@ -494,7 +1206,12 @@ enum CaptureMode {
 struct CaptureAnnotationSession: Identifiable {
     let id = UUID()
     let image: NSImage
-    let mode: CaptureMode
+    let destination: CaptureAnnotationDestination
+}
+
+enum CaptureAnnotationDestination {
+    case capture(CaptureMode)
+    case edit(ScreenshotItem)
 }
 
 struct CaptureNotice: Identifiable, Equatable {

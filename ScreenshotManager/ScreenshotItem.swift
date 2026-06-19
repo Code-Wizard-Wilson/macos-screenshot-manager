@@ -12,7 +12,11 @@ struct ScreenshotItem: Identifiable, Hashable, Sendable {
     let pixelHeight: Int
 
     var displaySize: String {
-        ByteCountFormatter.string(fromByteCount: byteSize, countStyle: .file)
+        if isTemporary {
+            return "Temporary"
+        }
+
+        return ByteCountFormatter.string(fromByteCount: byteSize, countStyle: .file)
     }
 
     var dimensionsText: String {
@@ -21,6 +25,10 @@ struct ScreenshotItem: Identifiable, Hashable, Sendable {
         }
 
         return "\(pixelWidth)x\(pixelHeight)"
+    }
+
+    var isTemporary: Bool {
+        url.scheme == "memory"
     }
 }
 

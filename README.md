@@ -20,13 +20,13 @@ A native macOS screenshot manager for fast capture, annotation, clipboard workfl
 
 ## Screenshots
 
-| Library | Editor |
+| Library | Menu Bar |
 | --- | --- |
-| ![Screenshot library](docs/screenshots/library.png) | ![Annotation editor](docs/screenshots/editor.png) |
+| ![Screenshot library](docs/screenshots/library.png) | ![Menu bar controls](docs/screenshots/menubar.png) |
 
-| Settings |
-| --- |
-| ![Settings](docs/screenshots/settings.png) |
+| Settings | Editor |
+| --- | --- |
+| ![Settings](docs/screenshots/settings.png) | ![Annotation editor](docs/screenshots/editor.png) |
 
 ## Requirements
 

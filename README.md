@@ -1,5 +1,7 @@
 # Screenshot Manager
 
+[English](README.md) · [Русский](README.ru.md) · [简体中文](README.zh-CN.md)
+
 A native macOS screenshot manager for fast capture, annotation, clipboard workflows, and a local screenshot library.
 
 ![Library view](docs/screenshots/library.png)

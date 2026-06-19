@@ -1,9 +1,41 @@
 .DS_Store
-xcuserdata/
+
+# Xcode
 DerivedData/
 build/
-dist/
 .build/
+*.xcworkspace/xcuserdata/
+*.xcodeproj/xcuserdata/
 *.xcuserstate
 *.moved-aside
+
+# Swift Package Manager
+.swiftpm/
+.package.resolved
+
+# Distribution artifacts
+dist/
+*.dmg
+*.pkg
+*.ipa
+*.xcarchive
+*.app.dSYM.zip
+*.dSYM
+
+# Local signing material and secrets
+*.p12
+*.cer
+*.certSigningRequest
+*.mobileprovision
+*.provisionprofile
+*.key
+*.pem
+*.env
+.env.*
+!.env.example
+
+# Editor and OS noise
 *.swp
+*.swo
+.vscode/
+.idea/

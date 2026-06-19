@@ -3,7 +3,7 @@ set -euo pipefail
 
 CERT_NAME="${CODESIGN_IDENTITY:-Screenshot Manager Local Development}"
 KEYCHAIN="${KEYCHAIN_PATH:-$HOME/Library/Keychains/login.keychain-db}"
-P12_PASSWORD="${P12_PASSWORD:-codex-local-signing}"
+P12_PASSWORD="${P12_PASSWORD:-$(/usr/bin/uuidgen)}"
 
 if /usr/bin/security find-identity -v -p codesigning 2>/dev/null | /usr/bin/grep -F "\"$CERT_NAME\"" >/dev/null; then
   echo "Code signing identity already exists: $CERT_NAME"
